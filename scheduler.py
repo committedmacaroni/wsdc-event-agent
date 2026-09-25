@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from .config import Config
 from .db import connect, utcnow
 from .fetcher import fetch_wsdc
+from .scoresheets import discover_eepro_year
 from .sync import SyncAlreadyRunning, run_wsdc_sync
 
 log = logging.getLogger("wsdc_catalog.scheduler")
@@ -50,6 +51,8 @@ class DailySyncScheduler(threading.Thread):
                     log.info("scheduled sync %s: %s found=%s added=%s updated=%s deactivated=%s",
                              run["id"], run["status"], run["records_found"], run["records_added"],
                              run["records_updated"], run["records_deactivated"])
+                    disc = discover_eepro_year(conn, utcnow().year)
+                    log.info("eepro event discovery: %s, %s events", disc["status"], disc["events"])
             except SyncAlreadyRunning:
                 log.info("scheduled sync skipped: another run in progress")
             except Exception:  # noqa: BLE001

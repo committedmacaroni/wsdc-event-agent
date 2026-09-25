@@ -40,8 +40,15 @@ def import_external_event(conn, payload: dict, now=None) -> dict:
         add_alias(conn, series_id, name, source, ts)  # provider's own name, never the canonical
         existing = match_occurrence(conn, series_id, start, country, set(), warnings,
                                     source=None, window_days=IMPORT_MATCH_DAYS)
+        if existing is None:  # a month-precision record (e.g. from the WSDC registry) in the same month
+            existing = conn.execute(
+                "SELECT * FROM events WHERE series_id=? AND date_precision='month' AND substr(start_date,1,7)=? "
+                "ORDER BY created_at LIMIT 1", (series_id, start.isoformat()[:7])).fetchone()
         if existing:
             event_id, status = existing["id"], "matched"
+            if existing["date_precision"] == "month":
+                conn.execute("UPDATE events SET start_date=?, end_date=?, year=?, date_precision='day', updated_at=? "
+                             "WHERE id=?", (start.isoformat(), end.isoformat(), start.year, ts, event_id))
         else:
             event_id, status = new_id("evt"), "created"
             conn.execute(

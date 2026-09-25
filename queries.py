@@ -47,6 +47,8 @@ def serialize_event(conn, r: sqlite3.Row, *, detail: bool = False) -> dict:
         "lifecycle_status": r["lifecycle_status"], "source": r["source"],
         "website_url": r["website_url"], "wsdc_source_url": r["wsdc_source_url"],
         "aliases": [a["alias"] for a in aliases_for(conn, r["series_id"])],
+        "results_available": conn.execute(
+            "SELECT 1 FROM provider_events WHERE event_id=? LIMIT 1", (r["id"],)).fetchone() is not None,
         "first_seen_at": r["first_seen_at"], "last_seen_at": r["last_seen_at"],
         "last_synced_at": r["last_synced_at"], "created_at": r["created_at"],
         "updated_at": r["updated_at"],
@@ -79,6 +81,9 @@ def list_events(conn, params: dict) -> dict:
             where.append(f"e.{key} = ?"); args.append(v)
     if (v := params.get("active")) not in (None, ""):
         where.append("e.active = ?"); args.append(int(_bool(v)))
+    if (v := params.get("results_available")) not in (None, ""):
+        where.append(("" if _bool(v) else "NOT ") +
+                     "EXISTS (SELECT 1 FROM provider_events pe WHERE pe.event_id = e.id)")
     if v := params.get("series_id"):
         where.append("e.series_id = ?"); args.append(v)
     if v := params.get("date_from"):

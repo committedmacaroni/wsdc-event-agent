@@ -14,6 +14,7 @@ from .enrichment import ImportError_, import_external_event
 from .fetcher import fetch_wsdc
 from .queries import QueryError, get_event, get_series, list_events, list_sync_runs
 from .registry import RegistryError, lookup_competitor, search_competitors
+from .scoresheets import coverage, discover_eepro_year, lookup_for_events, search_by_name
 from .resolver import resolve_event
 from .sync import SyncAlreadyRunning, add_alias, run_wsdc_sync
 
@@ -27,7 +28,8 @@ class HttpError(Exception):
         self.status, self.code, self.message, self.extra = status, code, message, extra
 
 
-def make_handler(cfg: Config, fetcher=None, registry_fetch=None):
+def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=None):
+    sheet_kw = {"fetch": sheet_fetch} if sheet_fetch else {}
     fetcher = fetcher or (lambda: fetch_wsdc(cfg.wsdc_url))
     registry_kw = {"fetch": registry_fetch} if registry_fetch else {}
 
@@ -166,6 +168,36 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None):
                 raise HttpError(404, "competitor_not_found", f"no WSDC registry record for {wsdc_id}")
             return 200, out
 
+        def scoresheet_search(self, conn, params):
+            return 200, search_by_name(conn, params.get("name", ""), year=params.get("year"),
+                                       event_id=params.get("event_id"))
+
+        def competitor_scoresheets(self, conn, params, wsdc_id):
+            comp = lookup_competitor(conn, wsdc_id, **registry_kw)
+            if comp is None:
+                raise HttpError(404, "competitor_not_found", f"no WSDC registry record for {wsdc_id}")
+            name = f"{comp['first_name']} {comp['last_name']}"
+            return 200, {"wsdc_id": comp["wsdc_id"], **search_by_name(conn, name, year=params.get("year"))}
+
+        def scoresheet_coverage(self, conn, params):
+            return 200, coverage(conn)
+
+        def scoresheet_lookup(self, conn, params):
+            body = self._body()
+            ids = body.get("event_ids")
+            if not isinstance(ids, list):
+                raise HttpError(400, "invalid_parameter", "event_ids must be a list of catalog event ids")
+            return 200, lookup_for_events(conn, body.get("name") or "", ids,
+                                          **({"fetch": sheet_fetch, "delay": 0} if sheet_fetch else {}))
+
+        def scoresheet_discover(self, conn, params):
+            body = self._body()
+            try:
+                years = [int(y) for y in (body.get("years") or [body.get("year")])]
+            except (TypeError, ValueError):
+                raise HttpError(400, "invalid_parameter", "year (or years) is required") from None
+            return 200, {"runs": [discover_eepro_year(conn, y, **sheet_kw) for y in years]}
+
         def import_event(self, conn, params):
             try:
                 return 200, import_external_event(conn, self._body())
@@ -181,6 +213,11 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None):
         ("POST", r"/events/resolve", False, Handler.resolve),
         ("GET", r"/competitors/search", False, Handler.competitor_search),
         ("GET", r"/competitors/(\d+)", False, Handler.competitor),
+        ("GET", r"/competitors/(\d+)/scoresheets", False, Handler.competitor_scoresheets),
+        ("GET", r"/scoresheets/search", False, Handler.scoresheet_search),
+        ("GET", r"/scoresheets/coverage", False, Handler.scoresheet_coverage),
+        ("POST", r"/scoresheets/lookup", False, Handler.scoresheet_lookup),
+        ("POST", r"/admin/scoresheets/discover", True, Handler.scoresheet_discover),
         ("POST", r"/admin/sync-events", True, Handler.sync),
         ("GET", r"/admin/sync-runs", True, Handler.sync_runs),
         ("POST", r"/admin/series/([A-Za-z0-9_]+)/aliases", True, Handler.alias),
@@ -190,6 +227,6 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None):
 
 
 def serve(cfg: Config, host: str = "0.0.0.0", port: int = 8080, fetcher=None,
-          registry_fetch=None) -> ThreadingHTTPServer:
+          registry_fetch=None, sheet_fetch=None) -> ThreadingHTTPServer:
     connect(cfg.db_path).close()  # create schema up front
-    return ThreadingHTTPServer((host, port), make_handler(cfg, fetcher, registry_fetch))
+    return ThreadingHTTPServer((host, port), make_handler(cfg, fetcher, registry_fetch, sheet_fetch))

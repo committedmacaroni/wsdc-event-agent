@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS event_series (
@@ -141,6 +141,61 @@ MIGRATIONS = {
         payload    TEXT NOT NULL,
         fetched_at TEXT NOT NULL
     );
+    """,
+    3: """
+    CREATE TABLE IF NOT EXISTS scoresheet_sheets (
+        url                TEXT PRIMARY KEY,
+        provider           TEXT NOT NULL,
+        provider_event_key TEXT,
+        event_id           TEXT REFERENCES events(id),
+        title              TEXT,
+        status             TEXT NOT NULL,
+        entries            INTEGER NOT NULL DEFAULT 0,
+        content_hash       TEXT,
+        error              TEXT,
+        fetched_at         TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS scoresheet_entries (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        sheet_url       TEXT NOT NULL REFERENCES scoresheet_sheets(url),
+        event_id        TEXT REFERENCES events(id),
+        provider        TEXT NOT NULL,
+        section         TEXT,
+        division        TEXT,
+        round           TEXT,
+        role            TEXT,
+        competitor_name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL,
+        partner_name    TEXT,
+        bib             TEXT,
+        place           INTEGER,
+        rank            INTEGER,
+        marks           TEXT,
+        counts          TEXT,
+        score           REAL,
+        advanced        INTEGER,
+        alternate       TEXT,
+        competed        INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_sse_name ON scoresheet_entries(normalized_name);
+    CREATE INDEX IF NOT EXISTS idx_sse_event ON scoresheet_entries(event_id);
+    CREATE INDEX IF NOT EXISTS idx_sse_sheet ON scoresheet_entries(sheet_url);
+    """,
+    4: """
+    CREATE TABLE IF NOT EXISTS provider_events (
+        provider     TEXT NOT NULL,
+        provider_key TEXT NOT NULL,
+        event_id     TEXT REFERENCES events(id),
+        name         TEXT,
+        start_date   TEXT,
+        end_date     TEXT,
+        index_url    TEXT,
+        links        TEXT NOT NULL,
+        fetched_at   TEXT NOT NULL,
+        PRIMARY KEY (provider, provider_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_pe_event ON provider_events(event_id);
+    CREATE INDEX IF NOT EXISTS idx_pe_start ON provider_events(start_date);
     """,
 }
 

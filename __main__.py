@@ -13,6 +13,7 @@ from .db import connect
 from .fetcher import fetch_wsdc, file_fetcher
 from .queries import list_events, list_sync_runs
 from .registry import lookup_competitor, search_competitors
+from .scoresheets import coverage, discover_eepro_year, lookup_for_events, search_by_name
 from .scheduler import DailySyncScheduler
 from .sync import SyncAlreadyRunning, run_wsdc_sync
 
@@ -40,6 +41,19 @@ def main(argv=None) -> int:
     r.add_argument("--limit", type=int, default=5)
     c = sub.add_parser("competitor", help="look up a dancer by WSDC ID or search by name")
     c.add_argument("query", help="WSDC ID (digits) or a name")
+    ss = sub.add_parser("scoresheets", help="score-sheet index")
+    ssub = ss.add_subparsers(dest="ss_cmd", required=True)
+    sd = ssub.add_parser("discover", help="add a provider's past events to the catalog (no score sheets)")
+    sd.add_argument("--year", type=int, action="append", required=True, help="repeatable")
+    sl = ssub.add_parser("lookup", help="fetch sheets for selected events and find a dancer")
+    sl.add_argument("name")
+    sl.add_argument("--event", action="append", required=True, help="catalog event id (repeatable)")
+    sq = ssub.add_parser("search", help="search sheets already retrieved (no provider requests)")
+    sq.add_argument("name")
+    sq.add_argument("--year", type=int)
+    sp = ssub.add_parser("parse", help="debug: fetch one sheet URL and show what the parser sees")
+    sp.add_argument("url")
+    ssub.add_parser("coverage")
     e = sub.add_parser("events")
     e.add_argument("params", nargs="*", help="filters as key=value, e.g. year=2026 country=USA")
     args = p.parse_args(argv)
@@ -80,6 +94,28 @@ def main(argv=None) -> int:
         conn = connect(cfg.db_path)
         q = args.query.strip()
         _print(lookup_competitor(conn, q) if q.isdigit() else search_competitors(conn, q))
+    elif args.cmd == "scoresheets":
+        conn = connect(cfg.db_path)
+        if args.ss_cmd == "discover":
+            _print([discover_eepro_year(conn, y) for y in args.year])
+        elif args.ss_cmd == "lookup":
+            _print(lookup_for_events(conn, args.name, args.event))
+        elif args.ss_cmd == "search":
+            _print(search_by_name(conn, args.name, year=args.year))
+        elif args.ss_cmd == "coverage":
+            _print(coverage(conn))
+        elif args.ss_cmd == "parse":
+            from .eepro import parse_sheet
+            from .fetcher import fetch_html
+            r = parse_sheet(fetch_html(args.url))
+            print(f"event: {r['event_title']}  sections: {len(r['sections'])}  errors: {len(r['errors'])}")
+            for sec in r["sections"]:
+                e0 = sec["entries"][0]
+                print(f"  {sec['title']!r}: {sec['division']}/{sec['role'] or 'couples'}/{sec['round']}, "
+                      f"{len(sec['judges'])} judges named, {len(sec['entries'])} entries; first: "
+                      f"{e0['name']} bib {e0['bib']} marks {e0['marks']}")
+            for err in r["errors"][:10]:
+                print("  ERROR", err)
     elif args.cmd == "events":
         _print(list_events(connect(cfg.db_path), dict(kv.split("=", 1) for kv in args.params)))
     return 0
