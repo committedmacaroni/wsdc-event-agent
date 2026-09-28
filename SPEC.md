@@ -276,14 +276,74 @@ Registry responses are cached for 12 h (`registry_cache`). Schema v2 adds
 `events.date_precision`, `series_external_refs` and `registry_cache`; existing v1
 databases migrate automatically.
 
-## 12. Score sheets (next)
+## 12. Score sheets, retrieved on demand (v0.4)
 
-- Name-based search across all rounds needs per-provider adapters.
-- The WSDC-approved providers are Danceconvention, Danceplace, Event Express Pro,
-  EventManagement, Scoring.Dance, Swing Director, SwingWars, Vote4Dance and World Dance
-  Registry.
-- Plan: for each catalog event, discover the provider's results, fetch every round's sheet,
-  and store a `scoresheet_entries` index (event, division, round, role, bib, name, marks,
-  outcome, sheet URL).
-- `GET /competitors/scoresheets?name=` and `?wsdc_id=` then query the index.
-- Adapters will be built against real sample pages, one provider at a time.
+Score sheets are fetched only when a dancer asks for them, and only for the events the
+dancer selected. There is no bulk download.
+
+### User flow (Replit)
+
+1. The dancer enters their name. Replit may also use `/competitors/search` to find their
+   WSDC ID.
+2. Replit lists events to pick from:
+   `GET /events?year=2026&results_available=true`, plus `search` and `country` as usual.
+   Every event carries `results_available`.
+3. The dancer selects the events they attended, and Replit calls
+   `POST /scoresheets/lookup {"name": "...", "event_ids": ["evt_...", ...]}` (at most 10 per
+   call).
+4. Each selected event comes back with a `status`:
+   - `found`: the dancer appears on at least one sheet;
+   - `not_on_sheets`: the sheets were checked and the name wasn't on them;
+   - `no_results_source`: no supported provider has results for this event yet;
+   - `event_not_found`: the event id is unknown.
+   Found events include `divisions → rounds`, and each round has bib, partner, rank or
+   place, the marks of each judge, counts, score, advanced, alternate and a `sheet_url`.
+
+### Event discovery (no score sheets)
+
+`POST /admin/scoresheets/discover {"years": [2025, 2026]}`, or
+`scoresheets discover --year`, reads a provider's event list. For eepro this is one page per
+year. The discovery step:
+
+- adds past events to the catalog (matched to existing events, or created as historical);
+- upgrades month-precision registry events to exact dates;
+- stores each event's result-page links in `provider_events`.
+
+The daily scheduler refreshes the current year's list. A lookup for an event with no known
+provider also triggers discovery for that event's year, at most once per 24 h.
+
+### Caching
+
+- Fetched sheets are stored in `scoresheet_sheets` and `scoresheet_entries`, and reused by
+  later lookups.
+- For events that ended within 14 days, sheets older than 1 h are re-fetched, since results
+  may still be corrected.
+- Requests to the provider are spaced 0.3 s apart during a lookup.
+- `GET /scoresheets/search?name=` searches only sheets already retrieved.
+
+### Provider: Event Express Pro (eepro.com)
+
+Formats were observed on 2026-09-24:
+
+- **Year index:** event headers (`"September 10-13, 2026 - SwingTime"`) followed by links to
+  `/results/<slug>/<page>.html`.
+- **Prelim, quarter and semi sheets:**
+  - Columns: Count, Competitor, one per judge, BIB, Counts (Y-A-N), Sum, Promote, Alt.
+  - Rows without a Count did not advance.
+- **Final sheets:** Place, Competitor ("Leader and Follower"), one per judge, BIB
+  ("321/172"), Marks Sorted.
+
+The parser uses table cells when present and whitespace tokens otherwise. Rows are parsed
+right to left, and the judge count comes from each row. Couples split into leader and
+follower entries. PDF result pages are listed but not parsed.
+
+### Matching and limits
+
+- **Catalog event to provider event:** first by the link created during discovery. If none
+  exists, the fallback is a provider event starting within ±3 days whose name shares at
+  least half its words with the event name, series name or an alias.
+- **Dancer names:** exact match, ignoring case and accents. Dancers with the same name merge,
+  and spelling variants are missed.
+- **Remaining providers:** Danceconvention, Danceplace, EventManagement, Scoring.Dance,
+  Swing Director, SwingWars, Vote4Dance and World Dance Registry. Each adapter supplies
+  `parse_index` and `parse_sheet` in the same shapes.
