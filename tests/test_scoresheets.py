@@ -52,6 +52,20 @@ class TestParsing(unittest.TestCase):
         self.assertEqual(strip(a), strip(b))
         self.assertEqual(a["errors"], [])
 
+    def test_live_markup_snippet(self):
+        """Real HTML from eepro.com: rows must not be split by source newlines or the bib <div>."""
+        r = parse_sheet(read("eepro_live_snippet.html"))
+        self.assertEqual((r["event_title"], r["errors"]), ("SwingTime Denver - 2026", []))
+        sec = r["sections"][0]
+        self.assertEqual((sec["title"], sec["competed"], sec["round"]), ("All-In Prelims", 62, "prelims"))
+        self.assertEqual(sec["judges"], ["Yvonne Antonacci", "Bella Viramontes", "Jim Tigges", "Sam Vaden",
+                                         "Thomas Carter"])
+        self.assertEqual(len(sec["entries"]), 6)  # 3 couples -> leader + follower each
+        lead = sec["entries"][2]
+        self.assertEqual((lead["name"], lead["role"], lead["partner"], lead["bib"], lead["rank"], lead["advanced"]),
+                         ("Aidan Keith-Hynes", "leader", "Heather Maddigan", "21", 1, True))
+        self.assertEqual(lead["marks"]["Jim Tigges"], "Y")
+
     def test_prelim_details(self):
         secs = {s["title"]: s for s in parse_sheet(read("eepro_prelims.html"))["sections"]}
         fol = secs["Jack & Jill Follower Novice Prelims"]
@@ -181,6 +195,16 @@ class TestLookup(unittest.TestCase):
         self.assertEqual(tuple(ev), ("2026-09-10", "day"))
         out = lookup_for_events(conn, "Abigail Sewall", [eid], fetch=fetcher(), now=NOW, delay=0)
         self.assertEqual(out["events"][0]["divisions"][0]["final_place"], 4)
+
+    def test_old_parser_cache_is_reread(self):
+        lookup_for_events(self.conn, "Rose Landay", [self.swingtime], fetch=self.fetch, now=NOW, delay=0)
+        self.conn.execute("UPDATE scoresheet_sheets SET parser_version=1, status='empty'")
+        self.conn.execute("DELETE FROM scoresheet_entries")
+        n = len(self.fetch.calls)
+        later = datetime(2026, 12, 1, tzinfo=timezone.utc)
+        out = lookup_for_events(self.conn, "Rose Landay", [self.swingtime], fetch=self.fetch, now=later, delay=0)
+        self.assertEqual(len(self.fetch.calls) - n, 2)  # both sheets re-fetched despite the event being old
+        self.assertEqual(out["events"][0]["status"], "found")
 
     def test_search_cached_and_coverage(self):
         lookup_for_events(self.conn, "Rose Landay", [self.swingtime], fetch=self.fetch, now=NOW, delay=0)

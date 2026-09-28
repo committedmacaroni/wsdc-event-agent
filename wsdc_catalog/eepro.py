@@ -31,6 +31,7 @@ from bs4 import BeautifulSoup, NavigableString
 from .normalize import parse_date_range
 
 PROVIDER = "eepro"
+PARSER_VERSION = 2  # bump when parsing changes so cached sheets are re-read
 INDEX_URL = "https://eepro.com/results/{year}/"
 
 _HEADER_RE = re.compile(
@@ -95,28 +96,42 @@ def parse_index(html: str, base_url: str) -> tuple[list[IndexEvent], list[str]]:
 
 
 # ------------------------------------------------------------------ sheet parsing
+_TEXT_BLOCKS = ["li", "p", "h1", "h2", "h3", "h4", "h5", "h6"]
+
+
+def _clean_cell(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _lines(html: str) -> list[list[str]]:
-    """Page as lines of cells: table cells become separate cells; other lines are whitespace-split later."""
+    """Page as a list of lines, each a list of cells, in document order.
+
+    Tables are read structurally (one line per <tr>, one cell per <td>), so line breaks,
+    tabs, or nested tags inside the HTML source don't split rows. A single-cell row is
+    split on <br> (eepro puts the section title and tie-break notes in one cell).
+    Text outside tables (headings, list items) becomes one-cell lines.
+    """
     soup = BeautifulSoup(html or "", "lxml")
     for t in soup(["script", "style", "head", "title"]):
         t.decompose()
-    for cell in soup.find_all(["td", "th"]):
-        cell.append("\t")
     for br in soup.find_all("br"):
         br.replace_with("\n")
-    for block in soup.find_all(["tr", "li", "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "table", "ul"]):
-        block.append("\n")
-    out = []
-    for raw in soup.get_text().split("\n"):
-        if not raw.strip():
-            continue
-        if "\t" in raw:
-            cells = [re.sub(r"\s+", " ", c).strip() for c in raw.split("\t")]
+    out: list[list[str]] = []
+    for el in soup.find_all(["tr", *_TEXT_BLOCKS]):
+        if el.name == "tr":
+            cells = [c.get_text(" ") for c in el.find_all(["td", "th"], recursive=False)]
+            if len(cells) == 1:
+                out.extend([p] for p in (_clean_cell(x) for x in cells[0].split("\n")) if p)
+                continue
+            cells = [_clean_cell(c) for c in cells]
             while cells and not cells[-1]:
                 cells.pop()
-            out.append(cells)
-        else:
-            out.append([re.sub(r"\s+", " ", raw).strip()])
+            if cells:
+                out.append(cells)
+            continue
+        if el.find_parent("tr") or el.find(["tr", *_TEXT_BLOCKS]):
+            continue  # inside a table (handled by its row) or a container of other blocks
+        out.extend([p] for p in (_clean_cell(x) for x in el.get_text(" ").split("\n")) if p)
     return out
 
 

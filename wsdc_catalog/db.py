@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS event_series (
@@ -196,6 +196,9 @@ MIGRATIONS = {
     );
     CREATE INDEX IF NOT EXISTS idx_pe_event ON provider_events(event_id);
     CREATE INDEX IF NOT EXISTS idx_pe_start ON provider_events(start_date);
+    """,
+    5: """
+    ALTER TABLE scoresheet_sheets ADD COLUMN parser_version INTEGER;
     """,
 }
 

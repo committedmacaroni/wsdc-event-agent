@@ -40,20 +40,37 @@ FINALS = [
 
 
 def table_sheet(sections, kind):
+    """Mirrors the live eepro markup (confirmed 2026-09-28): the title and notes share one
+    colspan cell separated by <br>, cells are separated by newlines and tabs in the source,
+    and the bib sits inside <div class="contentblack">."""
     head = ("Count", "Competitor") if kind == "prelim" else ("Place", "Competitor")
     tail = ("BIB", "Counts (Y-A-N)", "Sum", "Promote", "Alt") if kind == "prelim" else ("BIB", "Marks Sorted")
-    parts = ["<html><head><title>Event Express Pro Floor Interface</title></head><body><h2>SwingTime Denver - 2026</h2>"]
+    parts = ['<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">\n'
+             "    <title>Event Express Pro Floor Interface</title>\n</head>\n<body>\n\n<p>&nbsp;</p>\n"
+             "<h2><center>SwingTime Denver - 2026</center></h2>\n"
+             '<table border="1" cellspacing="1" cellpadding="10" align="center" width="100%">\n\n</table><p></p>']
     for title, judges, rows in sections:
-        parts.append(f"<ul><li>{escape(title)}")
-        if kind == "prelim":
-            parts.append(f"<br>{TIE}<br>All ties broken by head judge.")
-        parts.append("</li></ul><table>")
-        parts.append("<tr>" + "".join(f"<td><b><i>{escape(h)}</i></b></td>" for h in (*head, *judges, *tail)) + "</tr>")
+        ncols = len(head) + len(judges) + len(tail)
+        note = f"<br>{TIE}<br>All ties broken by head judge." if kind == "prelim" else ""
+        parts.append(f'<table border="1" cellspacing="1" cellpadding="2" align="center" width="100%"><tbody>'
+                     f'<tr bgcolor="#ffae5e"><td colspan="{ncols}">{escape(title)}{note}</td></tr><tr>\n')
+        hdr = [f"\t<td><em><strong>{escape(head[0])}</strong></em></td>\n",
+               f'\t<td width="400"><em><strong>{escape(head[1])}</strong></em></td>']
+        hdr += [f"<td><em><strong>{escape(j)}</strong></em></td>" for j in judges]
+        hdr += [f"<td><em><strong>{escape(tail[0])}</strong></em></td>\n"]
+        hdr += [f"\t<td><em><strong>{escape(t)}</strong></em></td>\n" for t in tail[1:]]
+        parts.append("".join(hdr) + "</tr>")
+        nj = len(judges)
         for r in rows:
-            parts.append("<tr>" + "".join(f"<td>{escape(c)}</td>" for c in r.split("|")) + "</tr>")
-        parts.append("</table>")
+            c = r.split("|")
+            cells = [f"<tr>\n\t<td>{escape(c[0])}</td>\n\t<td>{escape(c[1])}</td>"]
+            cells += [f"<td>{escape(x)}</td>" for x in c[2:2 + nj]]
+            cells += [f'<td><div class="contentblack">{escape(c[2 + nj])}</div></td>\n']
+            cells += [f"\t<td>{escape(x)}</td>\n" for x in c[3 + nj:]]
+            parts.append("".join(cells) + "</tr>")
+        parts.append("</tbody></table><p></p>")
     parts.append("<p>INSTANT SCORING provided by Paul Stoddard</p></body></html>")
-    return "\n".join(parts)
+    return "".join(parts)
 
 
 def list_sheet(sections):

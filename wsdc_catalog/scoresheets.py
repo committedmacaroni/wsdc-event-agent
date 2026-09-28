@@ -103,13 +103,14 @@ def store_sheet(conn, url: str, provider: str, event_key: str | None, event_id: 
         conn.execute("DELETE FROM scoresheet_entries WHERE sheet_url=?", (url,))
         conn.execute(
             "INSERT INTO scoresheet_sheets (url, provider, provider_event_key, event_id, title, status, entries, "
-            "content_hash, error, fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET "
+            "content_hash, error, fetched_at, parser_version) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(url) DO UPDATE SET "
             "provider_event_key=excluded.provider_event_key, event_id=excluded.event_id, title=excluded.title, "
             "status=excluded.status, entries=excluded.entries, content_hash=excluded.content_hash, "
-            "error=excluded.error, fetched_at=excluded.fetched_at",
+            "error=excluded.error, fetched_at=excluded.fetched_at, parser_version=excluded.parser_version",
             (url, provider, event_key, event_id, parsed.get("event_title"), "parsed" if rows else "empty",
              len(rows), hashlib.sha256(html.encode()).hexdigest()[:16],
-             "; ".join(parsed["errors"][:5]) or None, ts))
+             "; ".join(parsed["errors"][:5]) or None, ts, eepro.PARSER_VERSION))
         conn.executemany(
             "INSERT INTO scoresheet_entries (sheet_url, event_id, provider, section, division, round, role, "
             "competitor_name, normalized_name, partner_name, bib, place, rank, marks, counts, score, advanced, "
@@ -122,9 +123,10 @@ def store_sheet(conn, url: str, provider: str, event_key: str | None, event_id: 
 
 
 def _sheet_is_fresh(conn, url: str, event_end: str | None, now: datetime) -> bool:
-    r = conn.execute("SELECT status, fetched_at FROM scoresheet_sheets WHERE url=?", (url,)).fetchone()
-    if not r or r["status"] not in ("parsed", "empty"):
-        return False
+    r = conn.execute("SELECT status, fetched_at, parser_version FROM scoresheet_sheets WHERE url=?",
+                     (url,)).fetchone()
+    if not r or r["status"] not in ("parsed", "empty") or r["parser_version"] != eepro.PARSER_VERSION:
+        return False  # never cached, failed, or read by an older parser
     ended_long_ago = event_end and (now.date() - date.fromisoformat(event_end)).days > REFETCH_RECENT_DAYS
     fetched = datetime.fromisoformat(r["fetched_at"].replace("Z", "+00:00"))
     return bool(ended_long_ago) or now - fetched < RECENT_SHEET_MAX_AGE
