@@ -59,8 +59,22 @@ class TestScoringDanceParser(unittest.TestCase):
         self.assertFalse(lead["entries"][3]["advanced"])
         self.assertEqual(follow["entries"][1]["marks"]["Lecie Langille"], "N")
 
-    def test_unknown_final_layout_reported_not_guessed(self):
+    def test_final(self):
         r = scoringdance.parse_sheet(read("sd_round_3074.html"))
+        self.assertEqual(r["errors"], [])
+        sec = r["sections"][0]
+        self.assertEqual((sec["division"], sec["round"], len(sec["judges"])), ("Advanced", "finals", 8))
+        lead, follow = sec["entries"][0], sec["entries"][1]
+        self.assertEqual((lead["name"], lead["role"], lead["wsdc_id"], lead["place"], lead["bib"], lead["partner"]),
+                         ("Fran Vidal", "leader", 18215, 1, "340", "Ellen Dacombe"))
+        self.assertEqual((follow["name"], follow["role"], follow["wsdc_id"], follow["place"]),
+                         ("Ellen Dacombe", "follower", 9498, 1))
+        self.assertEqual((lead["marks"]["Tara Trafzer"], lead["marks"]["Paul Warden"]), (6, 1))
+        self.assertNotIn("Gary Jobst", lead["marks"])
+
+    def test_unknown_layout_reported_not_guessed(self):
+        r = scoringdance.parse_sheet("<h1>Strictly final results - X 2025</h1><table><tr><th>Rank</th></tr>"
+                                     "<tr><td>1</td></tr></table>")
         self.assertEqual(r["sections"], [])
         self.assertIn("finals layout not yet supported", r["errors"][0])
 
@@ -146,3 +160,15 @@ class TestWsdcIdMatching(unittest.TestCase):
                "dancer_first": "Henry", "dancer_last": "Leonard", "dancer_wsdcid": 99}
         out = dancer_results(self.conn, "Henry Leonard", wsdc_id="99", registry_fetch=lambda q: rec)
         self.assertEqual(out["total_events"], 0)  # sheet says this Henry Leonard is #17901, not #99
+
+
+class TestFinalsInDancerResults(unittest.TestCase):
+    def test_prelim_and_final_combined(self):
+        conn = mem()
+        add_scoring_dance_event(conn, "195", fetch=fetcher(), now=NOW)
+        index_provider_events(conn, provider="scoring_dance", fetch=fetcher(), now=NOW, delay=0)
+        out = dancer_results(conn, "Ellen Dacombe", include_registry=False)
+        div = out["events"][0]["divisions"][0]
+        self.assertEqual((div["division"], div["role"]), ("Advanced", "follower"))
+        self.assertEqual([r["round"] for r in div["rounds"]], ["prelims", "finals"])
+        self.assertEqual((div["final_place"], div["rounds"][1]["partner"]), (1, "Fran Vidal"))

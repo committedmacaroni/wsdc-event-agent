@@ -25,7 +25,7 @@ from bs4 import BeautifulSoup
 from .eepro import describe_title
 
 PROVIDER = "scoring_dance"
-PARSER_VERSION = 2  # 2: real markup (image header, data-state, data-wsdc, judge titles)
+PARSER_VERSION = 3  # 2: real prelim markup; 3: finals (couples, Placement column)
 BASE = "https://scoring.dance"
 _EVENT_RE = re.compile(r"scoring\.dance/(?:[a-z]{2}[A-Z]{2}/)?events/(\d+)", re.I)
 _ROUND_RE = re.compile(r"/events/(\d+)/results/(\d+)\.html", re.I)
@@ -91,7 +91,7 @@ def parse_sheet(html: str) -> dict:
     event_title = title.split(" - ", 1)[1].strip() if " - " in title else None
     info = describe_title(round_title)
     sections, errors = [], []
-    callback_tables, other_tables = [], 0
+    callback_tables, final_tables, other_tables = [], [], 0
     for t in soup.find_all("table"):
         rows = t.find_all("tr")
         if not rows:
@@ -100,9 +100,13 @@ def parse_sheet(html: str) -> dict:
         header = [_cell_text(c) for c in head_cells]
         if header and header[0].lower().startswith("bib") and any(h in ("Σ", "∑") for h in header):
             callback_tables.append((head_cells, header, rows[1:]))
+        elif header and header[0].lower().startswith("bib") and "placement" in [h.lower() for h in header]:
+            final_tables.append((head_cells, header, rows[1:]))
         else:
             other_tables += 1
-    if not callback_tables and other_tables:
+    for head_cells, header, rows in final_tables:
+        sections.append(_parse_final_table(head_cells, header, rows, round_title, info))
+    if not callback_tables and not final_tables and other_tables:
         errors.append(f"unrecognized table format in {round_title!r}"
                       + (" (finals layout not yet supported)" if info["round"] == "finals" else ""))
     roles = ["leader", "follower"] if len(callback_tables) == 2 else [info["role"]] * len(callback_tables)
@@ -138,3 +142,46 @@ def parse_sheet(html: str) -> dict:
                          "role": role, "round": info["round"], "division": info["division"],
                          "competed": len(entries), "judges": judges, "entries": entries})
     return {"event_title": event_title, "sections": [s for s in sections if s["entries"]], "errors": errors}
+
+
+def _name_and_id(cell):
+    link = cell.find("a")
+    name = (link.get_text(" ", strip=True) if link else _cell_text(cell)).strip()
+    wsdc = link.get("data-wsdc") if link else None
+    return name, (int(wsdc) if wsdc and wsdc.isdigit() else None)
+
+
+def _parse_final_table(head_cells, header, rows, round_title, info) -> dict:
+    """Finals: Bib | Leader | Follower | judge placements... | head judge | Placement ("1st")."""
+    place_idx = [h.lower() for h in header].index("placement")
+    judge_idx = [i for i in range(3, place_idx) if header[i]]
+    judges = [re.sub(r"\s*\((?:chief|head)\s*judge\)\s*$", "", head_cells[i].get("title") or header[i],
+                     flags=re.I).strip() for i in judge_idx]
+    entries = []
+    for tr in rows:
+        tds = tr.find_all(["td", "th"])
+        if len(tds) <= place_idx:
+            continue
+        leader, leader_id = _name_and_id(tds[1])
+        follower, follower_id = _name_and_id(tds[2])
+        if not leader and not follower:
+            continue
+        marks = {}
+        for i, j in zip(judge_idx, judges):
+            raw = _cell_text(tds[i])
+            if raw:
+                marks[j] = int(raw) if raw.isdigit() else raw
+        pm = re.match(r"\s*(\d+)", _cell_text(tds[place_idx]))
+        place = int(pm.group(1)) if pm else None
+        base = {"rank": place, "place": place, "marks": marks, "counts": None, "score": None,
+                "advanced": None, "alternate": None, "state": (tr.get("data-state") or "").strip() or None}
+        bib = _cell_text(tds[0]) or None
+        if leader:
+            entries.append({**base, "role": "leader", "name": leader, "partner": follower or None,
+                            "bib": bib, "wsdc_id": leader_id})
+        if follower:
+            entries.append({**base, "role": "follower", "name": follower, "partner": leader or None,
+                            "bib": None, "wsdc_id": follower_id})
+    return {"title": round_title, "role": None, "round": info["round"] or "finals",
+            "division": info["division"], "competed": len({e["place"] for e in entries}) or None,
+            "judges": judges, "entries": entries}

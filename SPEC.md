@@ -432,9 +432,13 @@ The response:
   - Columns: Bib Number, name, judge initials, Σ.
   - Marks Yes/No/Alt1-3 become Y/N/A1-A3.
 - Rank is the row order (by score).
-- **Finals:** the format hasn't been seen yet. Such pages report
-  `unrecognized table format ... (finals layout not yet supported)` instead of guessing.
-  Capture one (`scoresheets capture <url>`) to add support.
+- **Finals** (confirmed format, captured 2026-09-29):
+  - Columns: Bib | Leader | Follower | one placement per judge | head judge | Placement
+    ("1st", an image header).
+  - Each couple becomes a leader entry and a follower entry, each with their own WSDC ID and
+    the other as partner. The bib goes on the leader.
+  - Judges' marks are their placements. Any other table layout is reported as unrecognized
+    rather than guessed.
 
 **Registering events:**
 
