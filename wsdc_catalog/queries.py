@@ -54,6 +54,9 @@ def serialize_event(conn, r: sqlite3.Row, *, detail: bool = False) -> dict:
         "updated_at": r["updated_at"],
     }
     if detail:
+        wc = conn.execute("SELECT checked_at, other_links FROM website_checks WHERE event_id=?", (r["id"],)).fetchone()
+        out["website_results_links"] = json.loads(wc["other_links"]) if wc else []
+        out["website_checked_at"] = wc["checked_at"] if wc else None
         out["country_raw"] = r["country_raw"]
         out["raw_payload"] = json.loads(r["raw_payload"]) if r["raw_payload"] else None
         out["alias_details"] = aliases_for(conn, r["series_id"])

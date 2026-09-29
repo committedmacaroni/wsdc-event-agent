@@ -54,6 +54,10 @@ class DailySyncScheduler(threading.Thread):
                     idx = index_eepro_year(conn, utcnow().year)
                     log.info("eepro indexing: %s, %s events, %s new sheets", idx["status"], idx["events"],
                              idx["sheets_indexed"])
+                    from .websites import discover_from_websites
+                    web = discover_from_websites(conn, limit=25)
+                    log.info("website scan: %s events checked, %s provider events found",
+                             web["events_checked"], web["provider_events_found"])
             except SyncAlreadyRunning:
                 log.info("scheduled sync skipped: another run in progress")
             except Exception:  # noqa: BLE001

@@ -406,3 +406,61 @@ The response:
   `sources == ["wsdc_registry"]` and no `divisions`.
 - **If the registry is unreachable**, the response still returns score-sheet results, with
   `registry.status = "unavailable"`.
+
+## 14. scoring.dance and event-website discovery (v0.6)
+
+### scoring.dance provider
+
+**URLs** (every locale is normalized to `enUS`):
+
+- Event results index: `https://scoring.dance/enUS/events/<n>/results/`
+- One round: `.../results/<round>.html`
+
+**Parsing:**
+
+- The results index yields the event name, the date (`at MM/DD/YYYY`) and the round links.
+- Prelim, quarter and semi pages (confirmed format): the heading
+  `"<Division> Jack&Jill <round> results - <Event Year>"`, then one table per role, leaders
+  first then followers.
+  - Columns: Bib Number, name, judge initials, Σ.
+  - Marks Yes/No/Alt1-3 become Y/N/A1-A3.
+- Rank is the row order (by score). Advancement isn't marked on the page, so `advanced` is
+  null.
+- **Finals:** the format hasn't been seen yet. Such pages report
+  `unrecognized table format ... (finals layout not yet supported)` instead of guessing.
+  Capture one (`scoresheets capture <url>`) to add support.
+
+**Registering events:**
+
+- Automatically, from event websites (below).
+- Manually, by event number: `scoresheets scoring-dance --number 195`, or
+  `POST /admin/scoresheets/scoring-dance {"numbers": [195]}`.
+
+### Event-website discovery
+
+`scoresheets websites [--limit 25] [--event evt_...]`, or
+`POST /admin/scoresheets/websites {"limit": 25}`, scans event websites for results links:
+
+1. **Which events:** catalog events with a `website_url` that have already started and weren't
+   checked in the last 7 days, most recent first. Provider sites themselves are never
+   scanned as event websites.
+2. **Which pages:** the home page, plus up to 3 same-site pages whose link text or path
+   mentions results, scores or scoring.
+3. **What gets registered:**
+   - eepro links (`eepro.com/results/<slug>/`) → the eepro provider event (its year index
+     is discovered if needed);
+   - scoring.dance links → the event's scoring.dance results index.
+4. **Year check:** the provider event attaches to the catalog event only when their start
+   dates are within 10 days. Otherwise (for example, a site still linking last year's
+   results) it's matched or created as its own occurrence by date.
+5. **Other results links** (PDFs, the event's own pages) are stored in `website_checks` and
+   returned as `website_results_links` on `GET /events/:id` and on each event in
+   `/dancers/results`. They can't be searched by name.
+6. **Indexing:** new scoring.dance sheets are indexed at the end of the scan.
+
+### Other changes
+
+- Provider-created events no longer store the provider's page as `website_url`. Migration 6
+  clears values stored that way by earlier versions.
+- The fetcher keeps cookies across redirects and sends `Accept-Language: en-US`, since some
+  sites loop forever without cookies.

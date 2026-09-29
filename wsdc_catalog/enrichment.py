@@ -59,7 +59,7 @@ def import_external_event(conn, payload: dict, now=None) -> dict:
                 "'historical',?,?,?,?,?,?,?)",
                 (event_id, series_id, name, normalize_event_name(name), start.isoformat(), end.isoformat(),
                  start.year, payload.get("city"), payload.get("region"), country,
-                 payload.get("location_raw"), source, payload.get("url"),
+                 payload.get("location_raw"), source, payload.get("website_url"),
                  json.dumps(payload, sort_keys=True), ts, ts, ts, ts))
         if payload.get("external_id") or payload.get("url"):
             conn.execute(

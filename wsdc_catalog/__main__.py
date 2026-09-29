@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import json
 import logging
 import sys
@@ -48,6 +49,13 @@ def main(argv=None) -> int:
     sd.add_argument("--year", type=int, action="append", required=True, help="repeatable")
     sx = ssub.add_parser("index", help="download and index every sheet for a year (backfill; safe to re-run)")
     sx.add_argument("--year", type=int, action="append", required=True, help="repeatable")
+    sw = ssub.add_parser("websites", help="scan event websites for results links (eepro, scoring.dance, other)")
+    sw.add_argument("--limit", type=int, default=25)
+    sw.add_argument("--event", action="append", help="only these catalog event ids (repeatable)")
+    sd2 = ssub.add_parser("scoring-dance", help="register + index scoring.dance events by event number")
+    sd2.add_argument("--number", action="append", required=True, help="the number in scoring.dance/.../events/<n>/")
+    sc = ssub.add_parser("capture", help="save a results page's HTML to data/captures/ and show how it parses")
+    sc.add_argument("url")
     sl = ssub.add_parser("lookup", help="fetch sheets for selected events and find a dancer")
     sl.add_argument("name")
     sl.add_argument("--event", action="append", required=True, help="catalog event id (repeatable)")
@@ -114,10 +122,30 @@ def main(argv=None) -> int:
             _print(search_by_name(conn, args.name, year=args.year))
         elif args.ss_cmd == "coverage":
             _print(coverage(conn))
-        elif args.ss_cmd == "parse":
-            from .eepro import parse_sheet
+        elif args.ss_cmd == "websites":
+            from .websites import discover_from_websites
+            _print(discover_from_websites(conn, limit=args.limit, event_ids=args.event))
+        elif args.ss_cmd == "scoring-dance":
+            from .scoresheets import index_provider_events
+            from .websites import add_scoring_dance_event
+            for n in args.number:
+                reg = add_scoring_dance_event(conn, n)
+                _print(reg)
+            _print(index_provider_events(conn, provider="scoring_dance"))
+        elif args.ss_cmd in ("parse", "capture"):
+            from pathlib import Path
+            from urllib.parse import urlparse
+            from . import eepro, scoringdance
             from .fetcher import fetch_html
-            r = parse_sheet(fetch_html(args.url))
+            url = scoringdance.to_en(args.url)
+            html = fetch_html(url)
+            if args.ss_cmd == "capture":
+                d = Path("data/captures"); d.mkdir(parents=True, exist_ok=True)
+                name = re.sub(r"[^A-Za-z0-9]+", "_", urlparse(url).netloc + urlparse(url).path).strip("_")[:120]
+                (d / f"{name}.html").write_text(html, encoding="utf-8")
+                print(f"saved {d / (name + '.html')} ({len(html)} bytes)")
+            parser = scoringdance if "scoring.dance" in url else eepro
+            r = parser.parse_sheet(html)
             print(f"event: {r['event_title']}  sections: {len(r['sections'])}  errors: {len(r['errors'])}")
             for sec in r["sections"]:
                 e0 = sec["entries"][0]

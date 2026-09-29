@@ -15,6 +15,7 @@ import time
 from datetime import date, datetime, timedelta
 
 from . import eepro
+from .providers import parser_for
 from .db import iso, utcnow
 from .enrichment import import_external_event
 from .fetcher import fetch_html
@@ -110,7 +111,7 @@ def store_sheet(conn, url: str, provider: str, event_key: str | None, event_id: 
             "error=excluded.error, fetched_at=excluded.fetched_at, parser_version=excluded.parser_version",
             (url, provider, event_key, event_id, parsed.get("event_title"), "parsed" if rows else "empty",
              len(rows), hashlib.sha256(html.encode()).hexdigest()[:16],
-             "; ".join(parsed["errors"][:5]) or None, ts, eepro.PARSER_VERSION))
+             "; ".join(parsed["errors"][:5]) or None, ts, parser_for(provider).PARSER_VERSION))
         conn.executemany(
             "INSERT INTO scoresheet_entries (sheet_url, event_id, provider, section, division, round, role, "
             "competitor_name, normalized_name, partner_name, bib, place, rank, marks, counts, score, advanced, "
@@ -123,9 +124,10 @@ def store_sheet(conn, url: str, provider: str, event_key: str | None, event_id: 
 
 
 def _sheet_is_fresh(conn, url: str, event_end: str | None, now: datetime) -> bool:
-    r = conn.execute("SELECT status, fetched_at, parser_version FROM scoresheet_sheets WHERE url=?",
+    r = conn.execute("SELECT provider, status, fetched_at, parser_version FROM scoresheet_sheets WHERE url=?",
                      (url,)).fetchone()
-    if not r or r["status"] not in ("parsed", "empty") or r["parser_version"] != eepro.PARSER_VERSION:
+    if not r or r["status"] not in ("parsed", "empty") or \
+            r["parser_version"] != parser_for(r["provider"]).PARSER_VERSION:
         return False  # never cached, failed, or read by an older parser
     ended_long_ago = event_end and (now.date() - date.fromisoformat(event_end)).days > REFETCH_RECENT_DAYS
     fetched = datetime.fromisoformat(r["fetched_at"].replace("Z", "+00:00"))
@@ -226,7 +228,7 @@ def lookup_for_events(conn, name: str, event_ids: list[str], *, fetch=fetch_html
                     continue
                 try:
                     html = fetch(url)
-                    parsed = eepro.parse_sheet(html)
+                    parsed = parser_for(pe["provider"]).parse_sheet(html)
                     store_sheet(conn, url, pe["provider"], pe["provider_key"], eid, parsed, html, ts)
                     sheets.append({"title": title, "url": url, "status": "fetched"})
                 except Exception as e:  # noqa: BLE001
@@ -299,42 +301,61 @@ def index_eepro_year(conn, year: int, *, fetch=fetch_html, now: datetime | None 
         conn.execute("UPDATE sync_runs SET status='failed', completed_at=? WHERE id=?", (ts, running["id"]))
 
     discovery = discover_eepro_year(conn, year, fetch=fetch, now=now)
+    if discovery["status"] != "success":
+        return {**discovery, "sheets_indexed": 0}
+    out = index_provider_events(conn, provider=eepro.PROVIDER, index_url=index_url, fetch=fetch, now=now,
+                                delay=delay)
+    return {**out, "year": year, "errors": discovery["errors"] + out["errors"]}
+
+
+def index_provider_events(conn, *, provider: str | None = None, index_url: str | None = None,
+                          event_id: str | None = None, fetch=fetch_html, now: datetime | None = None,
+                          delay: float = INDEX_REQUEST_DELAY) -> dict:
+    """Download and index every not-yet-indexed sheet of the matching provider events."""
+    now = now or utcnow()
+    source = f"index:{provider or 'all'}"
     run_id = conn.execute("INSERT INTO sync_runs (source, source_url, started_at, status) VALUES (?,?,?, 'running')",
-                          (source, index_url, ts)).lastrowid
+                          (source, index_url, iso(now))).lastrowid
     stats = {"events": 0, "sheets_indexed": 0, "sheets_already_indexed": 0, "sheets_skipped_pdf": 0,
              "sheets_failed": 0, "entries": 0}
-    errors = list(discovery["errors"])
-    status = "success" if discovery["status"] == "success" else "failed"
-    if status == "success":
-        pes = conn.execute("SELECT * FROM provider_events WHERE provider=? AND index_url=? ORDER BY start_date DESC",
-                           (eepro.PROVIDER, index_url)).fetchall()
-        for pe in pes:
-            stats["events"] += 1
-            for title, url in json.loads(pe["links"]):
-                if not url.lower().endswith((".html", ".htm")):
-                    stats["sheets_skipped_pdf"] += 1
-                    continue
-                if _sheet_is_fresh(conn, url, pe["end_date"], now):
-                    stats["sheets_already_indexed"] += 1
-                    continue
-                try:
-                    html = fetch(url)
-                    parsed = eepro.parse_sheet(html)
-                    stats["entries"] += store_sheet(conn, url, pe["provider"], pe["provider_key"], pe["event_id"],
-                                                    parsed, html, iso(utcnow()))
-                    stats["sheets_indexed"] += 1
-                    errors += [f"{url}: {e}" for e in parsed["errors"][:3]]
-                except Exception as e:  # noqa: BLE001
-                    stats["sheets_failed"] += 1
-                    errors.append(f"{url}: {type(e).__name__}: {e}")
-                if delay:
-                    time.sleep(delay)
-    conn.execute("UPDATE sync_runs SET status=?, completed_at=?, records_found=?, records_added=?, "
+    errors: list[str] = []
+    sql, args = "SELECT * FROM provider_events WHERE 1=1", []
+    for col, val in (("provider", provider), ("index_url", index_url), ("event_id", event_id)):
+        if val:
+            sql += f" AND {col}=?"
+            args.append(val)
+    rows = conn.execute(sql + " ORDER BY start_date DESC", args).fetchall()
+    for pe in rows:
+        stats["events"] += 1
+        try:
+            parser = parser_for(pe["provider"])
+        except KeyError:
+            errors.append(f"{pe['provider_key']}: no parser for provider {pe['provider']}")
+            continue
+        for title, url in json.loads(pe["links"]):
+            if not url.lower().endswith((".html", ".htm")):
+                stats["sheets_skipped_pdf"] += 1
+                continue
+            if _sheet_is_fresh(conn, url, pe["end_date"], now):
+                stats["sheets_already_indexed"] += 1
+                continue
+            try:
+                html = fetch(url)
+                parsed = parser.parse_sheet(html)
+                stats["entries"] += store_sheet(conn, url, pe["provider"], pe["provider_key"], pe["event_id"],
+                                                parsed, html, iso(utcnow()))
+                stats["sheets_indexed"] += 1
+                errors += [f"{url}: {e}" for e in parsed["errors"][:3]]
+            except Exception as e:  # noqa: BLE001
+                stats["sheets_failed"] += 1
+                errors.append(f"{url}: {type(e).__name__}: {e}")
+            if delay:
+                time.sleep(delay)
+    conn.execute("UPDATE sync_runs SET status='success', completed_at=?, records_found=?, records_added=?, "
                  "records_updated=?, records_unchanged=?, records_skipped=?, errors=? WHERE id=?",
-                 (status, iso(utcnow()), stats["events"], stats["entries"], stats["sheets_indexed"],
+                 (iso(utcnow()), stats["events"], stats["entries"], stats["sheets_indexed"],
                   stats["sheets_already_indexed"], stats["sheets_skipped_pdf"], json.dumps(errors[:200]), run_id))
-    return {"run_id": run_id, "status": status, "provider": eepro.PROVIDER, "year": year, **stats,
-            "errors": errors[:50]}
+    return {"run_id": run_id, "status": "success", "provider": provider or "all", **stats, "errors": errors[:50]}
 
 
 def index_status(conn) -> dict:

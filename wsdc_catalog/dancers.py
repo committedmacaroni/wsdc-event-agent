@@ -7,6 +7,8 @@ Combines two sources:
 """
 from __future__ import annotations
 
+import json
+
 from .normalize import normalize_text
 from .registry import RegistryError, lookup_competitor, post_find, search_competitors
 from .scoresheets import _group_divisions, index_status
@@ -88,6 +90,10 @@ def dancer_results(conn, name: str, *, wsdc_id=None, year: int | None = None,
                         "level_allowed": rec["level_allowed"], "primary": rec["primary"],
                         "secondary": rec["secondary"]}
 
+    for ev in events.values():
+        wc = conn.execute("SELECT other_links FROM website_checks WHERE event_id=?",
+                          (ev.get("event_id"),)).fetchone() if ev.get("event_id") else None
+        ev["website_results_links"] = json.loads(wc["other_links"]) if wc else []
     items = list(events.values())
     if year:
         items = [e for e in items if (e.get("start_date") or "").startswith(str(year))]

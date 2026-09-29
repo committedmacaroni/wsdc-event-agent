@@ -214,6 +214,25 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
                 raise HttpError(409, "index_in_progress", str(e)) from None
             return 200, {"runs": runs}
 
+        def scoresheet_websites(self, conn, params):
+            from .websites import discover_from_websites
+            body = self._body()
+            kw = {"fetch": sheet_fetch, "delay": 0} if sheet_fetch else {}
+            return 200, discover_from_websites(conn, limit=int(body.get("limit") or 25),
+                                               event_ids=body.get("event_ids"), **kw)
+
+        def scoresheet_scoring_dance(self, conn, params):
+            from .scoresheets import index_provider_events
+            from .websites import add_scoring_dance_event
+            body = self._body()
+            numbers = [str(n) for n in (body.get("numbers") or []) if str(n).isdigit()]
+            if not numbers:
+                raise HttpError(400, "invalid_parameter", "numbers must be a list of scoring.dance event numbers")
+            kw = {"fetch": sheet_fetch} if sheet_fetch else {}
+            regs = [add_scoring_dance_event(conn, n, **kw) for n in numbers]
+            idx = index_provider_events(conn, provider="scoring_dance", **({**kw, "delay": 0} if sheet_fetch else {}))
+            return 200, {"registered": regs, "indexing": idx}
+
         def scoresheet_discover(self, conn, params):
             body = self._body()
             try:
@@ -243,6 +262,8 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
         ("POST", r"/scoresheets/lookup", False, Handler.scoresheet_lookup),
         ("GET", r"/dancers/results", False, Handler.dancer),
         ("POST", r"/admin/scoresheets/index", True, Handler.scoresheet_index),
+        ("POST", r"/admin/scoresheets/websites", True, Handler.scoresheet_websites),
+        ("POST", r"/admin/scoresheets/scoring-dance", True, Handler.scoresheet_scoring_dance),
         ("POST", r"/admin/scoresheets/discover", True, Handler.scoresheet_discover),
         ("POST", r"/admin/sync-events", True, Handler.sync),
         ("GET", r"/admin/sync-runs", True, Handler.sync_runs),

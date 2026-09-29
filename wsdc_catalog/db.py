@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS event_series (
@@ -199,6 +199,21 @@ MIGRATIONS = {
     """,
     5: """
     ALTER TABLE scoresheet_sheets ADD COLUMN parser_version INTEGER;
+    """,
+    6: """
+    CREATE TABLE IF NOT EXISTS website_checks (
+        event_id       TEXT PRIMARY KEY REFERENCES events(id),
+        website_url    TEXT NOT NULL,
+        checked_at     TEXT NOT NULL,
+        status         TEXT NOT NULL,
+        provider_links TEXT NOT NULL DEFAULT '[]',
+        other_links    TEXT NOT NULL DEFAULT '[]',
+        error          TEXT
+    );
+    -- earlier versions stored the provider's results page as a provider-created event's website
+    UPDATE events SET website_url = NULL
+     WHERE source IN ('eepro', 'scoring_dance')
+       AND (website_url LIKE '%eepro.com/results/%' OR website_url LIKE '%scoring.dance/%');
     """,
 }
 

@@ -17,13 +17,20 @@ class FetchResult:
     errors: list[str] = field(default_factory=list)
 
 
+def _opener():
+    """Fresh opener with a cookie jar: some sites (e.g. scoring.dance) set a cookie and redirect,
+    and loop forever for clients that don't send it back."""
+    import http.cookiejar
+    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+
 def fetch_html(url: str, timeout: float = 30, retries: int = 2) -> str:
     last: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
-                                                       "Accept": "text/html"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html",
+                                                       "Accept-Language": "en-US,en;q=0.8"})
+            with _opener().open(req, timeout=timeout) as resp:
                 charset = resp.headers.get_content_charset() or "utf-8"
                 return resp.read().decode(charset, errors="replace")
         except Exception as e:  # noqa: BLE001 - retried, then surfaced
