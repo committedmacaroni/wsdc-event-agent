@@ -474,3 +474,65 @@ The response:
   clears values stored that way by earlier versions.
 - The fetcher keeps cookies across redirects and sends `Accept-Language: en-US`, since some
   sites loop forever without cookies.
+
+## 15. Dashboard-ready data (v0.7)
+
+`/dancers/results` now returns the numbers Replit needs, so Replit displays them without
+computing its own scoring.
+
+**Per round** (in `events[].divisions[].rounds[]`):
+
+- `is_final`.
+- `mark_details`: one entry per judge.
+  - Callback rounds: `{judge, mark: "Y"|"A1"|"A2"|"A3"|"N", label: "Yes"|"Alt 1"|..., kind: yes|alt|no, points}`.
+  - Finals: `{judge, placement}`.
+- Callback rounds only: `callback_points`, `callback_max` (10 × judges marking),
+  `callback_pct`, and counts of `yes`, `alt` and `no`.
+- Points follow the eepro sheet legend: Yes = 10, Alt 1 = 4.5, Alt 2 = 4.3, Alt 3 = 4.2,
+  No = 0. The head judge's blank prelim column is excluded.
+
+**Top level:**
+
+| Field | Contents |
+|---|---|
+| `summary` | `events_competed`, `events_with_scoresheets`, `callback_rounds`, `callback_rounds_advanced`, `advancement_rate`, `avg_callback_pct`, `finals_made`, `best_final_place`, `wsdc_points`, `level_allowed` |
+| `progress.callback_rounds[]` | Chart series over time for prelims, quarters and semis only: date, event, division, role, round, callback_pct, points, max, yes/alt/no, advanced, rank, competed |
+| `progress.finals[]` | Kept separate: date, event, division, role, place, partner, each judge's placement |
+| `judges[]` | One per judge (matched by name): events_judged, callback_marks, yes/alt/no, yes_rate, avg_points, finals_judged, avg_finals_placement, and `history[]` (every mark or placement they gave, by date) |
+
+`callback_pct` normalizes for panel size, so rounds are comparable across events.
+
+## 16. Judge identity resolution (v0.8)
+
+Judge names differ across sheets and providers ("Tren" / "Trendlyon Veal", "Lisa M Picard" /
+"Lisa Picard"). `judges.rebuild()` groups the variants into one person. It runs automatically
+after any indexing that adds sheets, and on demand. Every decision records its method,
+confidence and reason.
+
+| Rule | Method | Confidence |
+|---|---|---|
+| Two names on the same panel (same sheet section) are never merged | — | hard rule |
+| Same first + last name, middle name or initial differs | `middle_name` | high |
+| Same last name, first names are nickname forms (built-in list) | `nickname` | high |
+| Same last name, one first name is a prefix of the other (≥ 3 letters) | `first_name_prefix` | medium |
+| First-name-only entry matching exactly one full-named judge | `first_name_only` | medium |
+| First-name-only entry matching several full-named judges: not merged, listed with candidates | `needs_review` | low |
+| Admin merge or separate (`judge_overrides`), applied before all rules | `manual` | manual |
+
+The display name is the fullest variant (most name parts, then most panels).
+
+**Endpoints:**
+
+| Endpoint | Key |
+|---|---|
+| `GET /judges` (`?review=true` lists only names needing a decision) | read key |
+| `POST /admin/judges/merge {"names": [a, b]}` | admin key |
+| `POST /admin/judges/separate {"names": [a, b]}` | admin key |
+| `POST /admin/judges/rebuild` | admin key |
+
+The CLI equivalents are `judges list [--review]`, `judges merge A B`, `judges separate A B`
+and `judges rebuild`.
+
+In `/dancers/results`, `judges[]` is grouped by resolved identity. Each judge adds
+`listed_as[]` (every name variant seen, with method, confidence and reason) and
+`needs_review`.

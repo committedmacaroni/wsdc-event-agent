@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 
+from .judges import alias_map
 from .normalize import normalize_text
 from .registry import RegistryError, lookup_competitor, post_find, search_competitors
 from .scoresheets import _group_divisions, index_status
@@ -107,7 +108,105 @@ def dancer_results(conn, name: str, *, wsdc_id=None, year: int | None = None,
     items.sort(key=lambda e: e.get("start_date") or "", reverse=True)
     return {
         "name": name, "normalized_name": norm, "total_events": len(items), "events": items,
+        "summary": _summary(items, registry), "progress": _progress(items),
+        "judges": _judges(items, alias_map(conn)),
         "registry": registry, "coverage": index_status(conn),
         "note": "Score-sheet matches use the exact name as printed on sheets (case and accents ignored). "
                 "Registry results cover only point-earning finals.",
+    }
+
+
+# ------------------------------------------------------------------ dashboard-ready views
+def _iter_rounds(items):
+    for ev in items:
+        for d in ev.get("divisions", []):
+            for r in d["rounds"]:
+                yield ev, d, r
+
+
+def _progress(items) -> dict:
+    """Chart-ready series. Callback rounds (prelims/quarters/semis) and finals are kept apart."""
+    callbacks, finals = [], []
+    for ev, d, r in _iter_rounds(items):
+        base = {"date": ev.get("start_date"), "event_id": ev.get("event_id"), "event_name": ev.get("event_name"),
+                "division": d["division"], "role": d["role"], "round": r["round"]}
+        if r["is_final"]:
+            finals.append({**base, "place": r["place"], "partner": r["partner"],
+                           "judge_placements": [m for m in r["mark_details"] if m.get("placement") is not None]})
+        elif r.get("callback_pct") is not None:
+            callbacks.append({**base, "callback_pct": r["callback_pct"], "callback_points": r["callback_points"],
+                              "callback_max": r["callback_max"], "yes": r["yes"], "alt": r["alt"], "no": r["no"],
+                              "advanced": r["advanced"], "rank": r["rank"], "competed": r["competed"]})
+    key = lambda x: (x["date"] or "", {"prelims": 0, "quarters": 1, "semis": 2}.get(x["round"], 3))
+    return {"callback_rounds": sorted(callbacks, key=key), "finals": sorted(finals, key=key),
+            "note": "callback_pct = callback points / (10 x judges marking): Yes=10, Alt1=4.5, Alt2=4.3, "
+                    "Alt3=4.2, No=0. Comparable across events with different panel sizes."}
+
+
+def _judges(items, identities: dict | None = None) -> list[dict]:
+    """One entry per judge (name variants resolved to one person) with every mark they gave."""
+    identities = identities or {}
+    by: dict = {}
+    for ev, d, r in _iter_rounds(items):
+        for m in r["mark_details"]:
+            if not m.get("judge"):
+                continue
+            ident = identities.get(normalize_text(m["judge"]))
+            key = ident["judge_key"] if ident else normalize_text(m["judge"])
+            j = by.setdefault(key, {
+                "judge": ident["judge_name"] if ident else m["judge"], "events": set(), "callback_marks": 0,
+                "yes": 0, "alt": 0, "no": 0, "points_total": 0.0, "finals_placements": [], "history": [],
+                "names": {}, "needs_review": False})
+            j["names"].setdefault(m["judge"], {"name": m["judge"],
+                                               "method": ident["method"] if ident else "exact",
+                                               "confidence": ident["confidence"] if ident else "high",
+                                               "reason": ident["reason"] if ident else None})
+            if ident and ident["method"] == "needs_review":
+                j["needs_review"] = True
+            j["events"].add(ev.get("event_id") or ev.get("event_name"))
+            h = {"date": ev.get("start_date"), "event_id": ev.get("event_id"), "event_name": ev.get("event_name"),
+                 "division": d["division"], "role": d["role"], "round": r["round"]}
+            if r["is_final"]:
+                if m.get("placement") is not None:
+                    j["finals_placements"].append(m["placement"])
+                j["history"].append({**h, "placement": m.get("placement"), "final_place": r["place"]})
+            elif m.get("points") is not None:
+                j["callback_marks"] += 1
+                j[m["kind"]] = j.get(m["kind"], 0) + 1
+                j["points_total"] += m["points"]
+                j["history"].append({**h, "mark": m["mark"], "label": m["label"], "points": m["points"]})
+    out = []
+    for j in by.values():
+        n = j["callback_marks"]
+        fp = j["finals_placements"]
+        out.append({
+            "judge": j["judge"], "events_judged": len(j["events"]), "callback_marks": n,
+            "yes": j["yes"], "alt": j["alt"], "no": j["no"],
+            "yes_rate": round(100 * j["yes"] / n, 1) if n else None,
+            "avg_points": round(j["points_total"] / n, 2) if n else None,
+            "finals_judged": len(fp), "avg_finals_placement": round(sum(fp) / len(fp), 2) if fp else None,
+            "history": sorted(j["history"], key=lambda x: x["date"] or ""),
+            "listed_as": sorted(j["names"].values(), key=lambda x: x["name"]),
+            "needs_review": j["needs_review"],
+        })
+    return sorted(out, key=lambda x: (-x["events_judged"], x["judge"]))
+
+
+def _summary(items, registry) -> dict:
+    rounds = list(_iter_rounds(items))
+    callbacks = [r for _, _, r in rounds if not r["is_final"] and r.get("callback_pct") is not None]
+    finals = [r for _, _, r in rounds if r["is_final"]]
+    decided = [r for r in callbacks if r["advanced"] is not None]
+    places = [r["place"] for r in finals if r["place"]]
+    return {
+        "events_competed": len(items),
+        "events_with_scoresheets": sum(1 for e in items if e.get("divisions")),
+        "callback_rounds": len(callbacks),
+        "callback_rounds_advanced": sum(1 for r in decided if r["advanced"]),
+        "advancement_rate": round(100 * sum(1 for r in decided if r["advanced"]) / len(decided), 1) if decided else None,
+        "avg_callback_pct": round(sum(r["callback_pct"] for r in callbacks) / len(callbacks), 1) if callbacks else None,
+        "finals_made": len(finals),
+        "best_final_place": min(places) if places else None,
+        "wsdc_points": sum((p.get("points") or 0) for e in items for p in e.get("registry_results", [])) or None,
+        "level_allowed": registry.get("level_allowed") if isinstance(registry, dict) else None,
     }

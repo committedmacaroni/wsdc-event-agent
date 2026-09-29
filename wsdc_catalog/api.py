@@ -233,6 +233,22 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
             idx = index_provider_events(conn, provider="scoring_dance", **({**kw, "delay": 0} if sheet_fetch else {}))
             return 200, {"registered": regs, "indexing": idx}
 
+        def judges(self, conn, params):
+            from .judges import list_judges
+            return 200, list_judges(conn, review_only=str(params.get("review", "")).lower() in ("1", "true"))
+
+        def judge_override(self, conn, params, action):
+            from .judges import add_override
+            body = self._body()
+            names = body.get("names") or []
+            if len(names) != 2:
+                raise HttpError(400, "invalid_parameter", "names must be a list of exactly two judge names")
+            return 200, add_override(conn, action, names[0], names[1])
+
+        def judges_rebuild(self, conn, params):
+            from .judges import rebuild
+            return 200, rebuild(conn)
+
         def scoresheet_discover(self, conn, params):
             body = self._body()
             try:
@@ -262,6 +278,9 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
         ("POST", r"/scoresheets/lookup", False, Handler.scoresheet_lookup),
         ("GET", r"/dancers/results", False, Handler.dancer),
         ("POST", r"/admin/scoresheets/index", True, Handler.scoresheet_index),
+        ("GET", r"/judges", False, Handler.judges),
+        ("POST", r"/admin/judges/(merge|separate)", True, Handler.judge_override),
+        ("POST", r"/admin/judges/rebuild", True, Handler.judges_rebuild),
         ("POST", r"/admin/scoresheets/websites", True, Handler.scoresheet_websites),
         ("POST", r"/admin/scoresheets/scoring-dance", True, Handler.scoresheet_scoring_dance),
         ("POST", r"/admin/scoresheets/discover", True, Handler.scoresheet_discover),

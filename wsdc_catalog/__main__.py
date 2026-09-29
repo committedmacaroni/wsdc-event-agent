@@ -69,6 +69,15 @@ def main(argv=None) -> int:
     d.add_argument("name")
     d.add_argument("--wsdc-id")
     d.add_argument("--year", type=int)
+    jg = sub.add_parser("judges", help="judge identities (name variants merged)")
+    jsub = jg.add_subparsers(dest="j_cmd", required=True)
+    jsub.add_parser("rebuild")
+    jl = jsub.add_parser("list")
+    jl.add_argument("--review", action="store_true", help="only names that need a human decision")
+    for act in ("merge", "separate"):
+        ja = jsub.add_parser(act)
+        ja.add_argument("name_a")
+        ja.add_argument("name_b")
     e = sub.add_parser("events")
     e.add_argument("params", nargs="*", help="filters as key=value, e.g. year=2026 country=USA")
     args = p.parse_args(argv)
@@ -156,6 +165,20 @@ def main(argv=None) -> int:
                 print("  ERROR", err)
     elif args.cmd == "dancer":
         _print(dancer_results(connect(cfg.db_path), args.name, wsdc_id=args.wsdc_id, year=args.year))
+    elif args.cmd == "judges":
+        from .judges import add_override, list_judges, rebuild
+        conn = connect(cfg.db_path)
+        if args.j_cmd == "rebuild":
+            _print(rebuild(conn))
+        elif args.j_cmd == "list":
+            out = list_judges(conn, review_only=args.review)
+            for j in out["judges"]:
+                variants = ", ".join(f"{n['name']} [{n['method']}/{n['confidence']}]" for n in j["names"])
+                print(f"{j['judge']}  ({j['panels']} panels): {variants}")
+            for r in out["needs_review"]:
+                print(f"REVIEW  {r['name']!r} could be: {', '.join(r['candidates'])}")
+        else:
+            _print(add_override(conn, args.j_cmd, args.name_a, args.name_b))
     elif args.cmd == "events":
         _print(list_events(connect(cfg.db_path), dict(kv.split("=", 1) for kv in args.params)))
     return 0

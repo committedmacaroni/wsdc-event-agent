@@ -115,3 +115,50 @@ class TestDancerResults(unittest.TestCase):
         self.assertEqual((out["total_events"], out["registry"]["status"]), (0, "not_found"))
         with self.assertRaises(ValueError):
             dancer_results(self.conn, "ab")
+
+
+class TestDashboardViews(unittest.TestCase):
+    def setUp(self):
+        self.conn = mem()
+        run_wsdc_sync(self.conn, day1_fetch(), now=DAY1)
+        index_eepro_year(self.conn, 2026, fetch=fetcher(), now=NOW, delay=0)
+        self.out = dancer_results(self.conn, "Rose Landay", include_registry=False)
+
+    def test_marks_have_labels_and_points(self):
+        nov = [d for d in self.out["events"][0]["divisions"] if d["division"] == "Novice"][0]
+        prelim = nov["rounds"][0]
+        self.assertEqual(prelim["mark_details"][0], {"judge": "Bella Viramontes", "mark": "Y", "label": "Yes",
+                                                     "kind": "yes", "points": 10.0})
+        self.assertEqual((prelim["callback_points"], prelim["callback_max"], prelim["callback_pct"]), (40.0, 40.0, 100.0))
+        semi = nov["rounds"][1]  # N, Y, Y, N
+        self.assertEqual((semi["callback_pct"], semi["yes"], semi["no"]), (50.0, 2, 2))
+
+    def test_finals_kept_separate(self):
+        allin = [d for d in self.out["events"][0]["divisions"] if d["division"] == "All-In"][0]
+        final = allin["rounds"][-1]
+        self.assertTrue(final["is_final"])
+        self.assertNotIn("callback_pct", final)
+        self.assertEqual(final["mark_details"][0]["placement"], 2)
+        prog = self.out["progress"]
+        self.assertEqual([r["round"] for r in prog["callback_rounds"]], ["prelims", "prelims", "semis"])
+        self.assertEqual((len(prog["finals"]), prog["finals"][0]["place"]), (1, 2))
+
+    def test_alt_points(self):
+        out = dancer_results(self.conn, "Octavia Betz", include_registry=False)
+        r = out["events"][0]["divisions"][0]["rounds"][0]  # Y, A1, Y, N
+        self.assertEqual([m["points"] for m in r["mark_details"]], [10.0, 4.5, 10.0, 0.0])
+        self.assertEqual(r["callback_pct"], 61.2)
+
+    def test_judge_breakdown(self):
+        judges = {j["judge"]: j for j in self.out["judges"]}
+        bella = judges["Bella Viramontes"]  # prelim Y, semi N, all-in prelim Y, all-in final 1st? (fixture)
+        self.assertEqual((bella["callback_marks"], bella["yes"], bella["no"]), (3, 2, 1))
+        self.assertEqual(bella["finals_judged"], 1)
+        self.assertEqual(len(bella["history"]), 4)
+        self.assertEqual(self.out["judges"][0]["events_judged"], 1)
+
+    def test_summary(self):
+        s = self.out["summary"]
+        self.assertEqual((s["events_competed"], s["finals_made"], s["best_final_place"], s["callback_rounds"]),
+                         (1, 1, 2, 3))
+        self.assertEqual(s["advancement_rate"], 66.7)  # semis alternate = not advanced

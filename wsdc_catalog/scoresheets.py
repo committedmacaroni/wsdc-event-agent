@@ -157,6 +157,45 @@ def _provider_events_for(conn, ev) -> list:
 
 
 # ------------------------------------------------------------------ result shaping
+# Callback mark values, as printed on eepro sheets: "Y=10, ALT1=4.5, ALT2=4.3, ALT3=4.2, N=0".
+MARK_POINTS = {"Y": 10.0, "A1": 4.5, "ALT1": 4.5, "A2": 4.3, "ALT2": 4.3, "A3": 4.2, "ALT3": 4.2, "N": 0.0}
+MARK_LABELS = {"Y": "Yes", "A1": "Alt 1", "ALT1": "Alt 1", "A2": "Alt 2", "ALT2": "Alt 2", "A3": "Alt 3",
+               "ALT3": "Alt 3", "N": "No"}
+MARK_KIND = {"Y": "yes", "N": "no"}
+
+
+def mark_details(round_name: str, marks) -> list[dict]:
+    """Per-judge marks with human labels and points (callback rounds) or placements (finals)."""
+    if isinstance(marks, dict):
+        pairs = list(marks.items())
+    elif isinstance(marks, list):
+        pairs = [(None, m) for m in marks]
+    else:
+        return []
+    out = []
+    for judge, m in pairs:
+        if round_name == "finals":
+            out.append({"judge": judge, "placement": m if isinstance(m, int) else None, "raw": m})
+            continue
+        code = str(m).upper() if m is not None else None
+        out.append({"judge": judge, "mark": code, "label": MARK_LABELS.get(code, code),
+                    "kind": MARK_KIND.get(code, "alt" if code in MARK_POINTS else "unknown"),
+                    "points": MARK_POINTS.get(code)})
+    return out
+
+
+def _callback_summary(details: list[dict]) -> dict:
+    scored = [d for d in details if d.get("points") is not None]
+    if not scored:
+        return {"callback_points": None, "callback_max": None, "callback_pct": None,
+                "yes": 0, "alt": 0, "no": 0, "judges_marking": 0}
+    pts = sum(d["points"] for d in scored)
+    return {"callback_points": round(pts, 2), "callback_max": 10.0 * len(scored),
+            "callback_pct": round(100 * pts / (10.0 * len(scored)), 1),
+            "yes": sum(d["kind"] == "yes" for d in scored), "alt": sum(d["kind"] == "alt" for d in scored),
+            "no": sum(d["kind"] == "no" for d in scored), "judges_marking": len(scored)}
+
+
 def _group_divisions(rows) -> list[dict]:
     divs: dict = {}
     for r in rows:
@@ -167,6 +206,11 @@ def _group_divisions(rows) -> list[dict]:
             "counts": r["counts"], "score": r["score"],
             "advanced": None if r["advanced"] is None else bool(r["advanced"]),
             "alternate": r["alternate"], "competed": r["competed"], "sheet_url": r["sheet_url"]})
+        rd = d["rounds"][-1]
+        rd["is_final"] = rd["round"] == "finals"
+        rd["mark_details"] = mark_details(rd["round"], rd["marks"])
+        if not rd["is_final"]:
+            rd.update(_callback_summary(rd["mark_details"]))
     out = []
     for d in divs.values():
         d["rounds"].sort(key=lambda x: ROUND_ORDER.get(x["round"], 9))
@@ -242,6 +286,9 @@ def lookup_for_events(conn, name: str, event_ids: list[str], *, fetch=fetch_html
         results.append({**base, "status": "found" if rows else "not_on_sheets",
                         "provider": pes[0]["provider"], "divisions": _group_divisions(rows),
                         "sheets": sheets, "errors": sheet_errors})
+    if any(s["status"] == "fetched" for r in results for s in r.get("sheets", [])):
+        from .judges import rebuild
+        rebuild(conn)
     return {"name": name, "normalized_name": norm, "events": results,
             "note": "Matched on the exact name printed on score sheets (case and accents ignored)."}
 
@@ -356,6 +403,9 @@ def index_provider_events(conn, *, provider: str | None = None, index_url: str |
                  "records_updated=?, records_unchanged=?, records_skipped=?, errors=? WHERE id=?",
                  (iso(utcnow()), stats["events"], stats["entries"], stats["sheets_indexed"],
                   stats["sheets_already_indexed"], stats["sheets_skipped_pdf"], json.dumps(errors[:200]), run_id))
+    if stats["sheets_indexed"]:
+        from .judges import rebuild
+        rebuild(conn)
     return {"run_id": run_id, "status": "success", "provider": provider or "all", **stats, "errors": errors[:50]}
 
 

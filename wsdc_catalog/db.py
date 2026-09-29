@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS event_series (
@@ -218,6 +218,28 @@ MIGRATIONS = {
     7: """
     ALTER TABLE scoresheet_entries ADD COLUMN wsdc_id INTEGER;
     CREATE INDEX IF NOT EXISTS idx_sse_wsdc ON scoresheet_entries(wsdc_id);
+    """,
+    8: """
+    CREATE TABLE IF NOT EXISTS judge_aliases (
+        alias_norm   TEXT PRIMARY KEY,
+        alias_name   TEXT NOT NULL,
+        judge_key    TEXT NOT NULL,
+        judge_name   TEXT NOT NULL,
+        method       TEXT NOT NULL,
+        confidence   TEXT NOT NULL,
+        reason       TEXT,
+        candidates   TEXT,
+        panels       INTEGER NOT NULL DEFAULT 0,
+        updated_at   TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_judge_key ON judge_aliases(judge_key);
+    CREATE TABLE IF NOT EXISTS judge_overrides (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        action     TEXT NOT NULL CHECK (action IN ('merge', 'separate')),
+        name_a     TEXT NOT NULL,
+        name_b     TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
     """,
 }
 
