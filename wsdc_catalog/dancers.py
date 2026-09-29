@@ -109,6 +109,7 @@ def dancer_results(conn, name: str, *, wsdc_id=None, year: int | None = None,
     return {
         "name": name, "normalized_name": norm, "total_events": len(items), "events": items,
         "summary": _summary(items, registry), "progress": _progress(items),
+        "wsdc_points": _points(items),
         "judges": _judges(items, alias_map(conn)),
         "registry": registry, "coverage": index_status(conn),
         "note": "Score-sheet matches use the exact name as printed on sheets (case and accents ignored). "
@@ -210,3 +211,36 @@ def _summary(items, registry) -> dict:
         "wsdc_points": sum((p.get("points") or 0) for e in items for p in e.get("registry_results", [])) or None,
         "level_allowed": registry.get("level_allowed") if isinstance(registry, dict) else None,
     }
+
+
+def _result_label(code) -> str | None:
+    """WSDC registry result codes: '1'..'5' = placement, 'F' = finalist (made the final, unplaced)."""
+    if code is None:
+        return None
+    c = str(code).strip().upper()
+    if c.isdigit():
+        n = int(c)
+        return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+    return {"F": "Finalist"}.get(c, c)
+
+
+def _points(items) -> dict:
+    """WSDC points awarded, one row per result, plus totals by division and role."""
+    awards = []
+    for ev in items:
+        for r in ev.get("registry_results", []):
+            awards.append({
+                "date": ev.get("start_date"), "event_id": ev.get("event_id"), "event_name": ev.get("event_name"),
+                "city": ev.get("city"), "country": ev.get("country"),
+                "division": r["division"], "division_abbr": r["division_abbr"], "role": r["role"],
+                "result": r["result"], "result_label": _result_label(r["result"]), "points": r["points"] or 0})
+    awards.sort(key=lambda a: a["date"] or "", reverse=True)
+    totals = {}
+    for a in awards:
+        t = totals.setdefault((a["division"], a["role"]), {"division": a["division"],
+                                                           "division_abbr": a["division_abbr"],
+                                                           "role": a["role"], "points": 0, "results": 0})
+        t["points"] += a["points"]
+        t["results"] += 1
+    return {"total": sum(a["points"] for a in awards), "awards": awards,
+            "by_division": sorted(totals.values(), key=lambda t: (-t["points"], t["division"] or ""))}

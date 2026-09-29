@@ -536,3 +536,13 @@ and `judges rebuild`.
 In `/dancers/results`, `judges[]` is grouped by resolved identity. Each judge adds
 `listed_as[]` (every name variant seen, with method, confidence and reason) and
 `needs_review`.
+
+## 17. WSDC points list (v0.8.1)
+
+`/dancers/results` returns `wsdc_points`, built from the registry:
+
+- `total`: all points across divisions and roles.
+- `awards[]`: one row per point-earning result, newest first. Fields: date, event_id,
+  event_name, city, country, division, division_abbr, role, result, `result_label`
+  ("1st"–"5th", or "Finalist" for code F), points.
+- `by_division[]`: `{division, division_abbr, role, points, results}`, highest points first.

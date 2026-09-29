@@ -162,3 +162,22 @@ class TestDashboardViews(unittest.TestCase):
         self.assertEqual((s["events_competed"], s["finals_made"], s["best_final_place"], s["callback_rounds"]),
                          (1, 1, 2, 3))
         self.assertEqual(s["advancement_rate"], 66.7)  # semis alternate = not advanced
+
+
+class TestPointsList(unittest.TestCase):
+    def test_points_awards_and_totals(self):
+        conn = mem()
+        run_wsdc_sync(conn, day1_fetch(), now=DAY1)
+        index_eepro_year(conn, 2026, fetch=fetcher(), now=NOW, delay=0)
+        out = dancer_results(conn, "Rose Landay", registry_fetch=registry({"Rose Landay": NAMES, "4242": ROSE}))
+        pts = out["wsdc_points"]
+        self.assertEqual(pts["total"], 4)
+        self.assertEqual([(a["event_name"], a["result_label"], a["points"]) for a in pts["awards"]],
+                         [("SwingTime", "Finalist", 1), ("South Bay Dance Fling", "4th", 3)])
+        self.assertEqual(pts["by_division"], [{"division": "Novice", "division_abbr": "NOV", "role": "follower",
+                                               "points": 4, "results": 2}])
+
+    def test_no_registry_record(self):
+        conn = mem()
+        out = dancer_results(conn, "Nobody Here", registry_fetch=registry({}))
+        self.assertEqual(out["wsdc_points"], {"total": 0, "awards": [], "by_division": []})
