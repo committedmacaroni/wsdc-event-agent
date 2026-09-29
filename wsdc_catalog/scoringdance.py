@@ -25,7 +25,7 @@ from bs4 import BeautifulSoup
 from .eepro import describe_title
 
 PROVIDER = "scoring_dance"
-PARSER_VERSION = 1
+PARSER_VERSION = 2  # 2: real markup (image header, data-state, data-wsdc, judge titles)
 BASE = "https://scoring.dance"
 _EVENT_RE = re.compile(r"scoring\.dance/(?:[a-z]{2}[A-Z]{2}/)?events/(\d+)", re.I)
 _ROUND_RE = re.compile(r"/events/(\d+)/results/(\d+)\.html", re.I)
@@ -71,47 +71,69 @@ def _num(text: str) -> float | None:
         return None
 
 
+def _cell_text(cell) -> str:
+    """Visible text, or an image's alt text (the Bib Number header is an icon)."""
+    t = cell.get_text(" ", strip=True)
+    if not t:
+        img = cell.find("img", alt=True)
+        t = img["alt"].strip() if img else ""
+    return t
+
+
+_STATE_ADVANCED = {"CB"}  # data-state on each row; "CB" = callback (advanced)
+
+
 def parse_sheet(html: str) -> dict:
     soup = BeautifulSoup(html or "", "lxml")
     h1s = [h.get_text(" ", strip=True) for h in soup.find_all("h1")]
     title = next((h for h in h1s if " - " in h), h1s[0] if h1s else "")
-    round_title = title.split(" - ")[0]
-    round_title = re.sub(r"\s+results?$", "", round_title, flags=re.I).strip()
+    round_title = re.sub(r"\s+results?$", "", title.split(" - ")[0], flags=re.I).strip()
     event_title = title.split(" - ", 1)[1].strip() if " - " in title else None
     info = describe_title(round_title)
     sections, errors = [], []
-    tables = soup.find_all("table")
-    callback_tables = []
-    for t in tables:
+    callback_tables, other_tables = [], 0
+    for t in soup.find_all("table"):
         rows = t.find_all("tr")
         if not rows:
             continue
-        header = [c.get_text(" ", strip=True) for c in rows[0].find_all(["th", "td"])]
-        if header and header[0].lower().startswith("bib") and "Σ" in header:
-            callback_tables.append((header, rows[1:]))
-    if not callback_tables and tables:
-        errors.append(f"unrecognized table format in {round_title!r} (finals layout not yet supported)")
+        head_cells = rows[0].find_all(["th", "td"])
+        header = [_cell_text(c) for c in head_cells]
+        if header and header[0].lower().startswith("bib") and any(h in ("Σ", "∑") for h in header):
+            callback_tables.append((head_cells, header, rows[1:]))
+        else:
+            other_tables += 1
+    if not callback_tables and other_tables:
+        errors.append(f"unrecognized table format in {round_title!r}"
+                      + (" (finals layout not yet supported)" if info["round"] == "finals" else ""))
     roles = ["leader", "follower"] if len(callback_tables) == 2 else [info["role"]] * len(callback_tables)
-    for (header, rows), role in zip(callback_tables, roles):
-        sigma = header.index("Σ")
-        judge_idx = [i for i in range(2, sigma) if _INITIALS.match(header[i] or "")]
-        judges = [header[i] for i in judge_idx]
+    for (head_cells, header, rows), role in zip(callback_tables, roles):
+        sigma = next(i for i, h in enumerate(header) if h in ("Σ", "∑"))
+        judge_idx = [i for i in range(2, sigma) if header[i]]
+        judges = [re.sub(r"\s*\((?:chief|head)\s*judge\)\s*$", "", head_cells[i].get("title") or header[i],
+                         flags=re.I).strip() for i in judge_idx]
         entries = []
-        for tr in rows:
-            cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
-            if len(cells) <= sigma or not cells[1]:
+        for rank, tr in enumerate(rows, 1):
+            tds = tr.find_all(["td", "th"])
+            if len(tds) <= sigma:
+                continue
+            link = tds[1].find("a")
+            name = (link.get_text(" ", strip=True) if link else _cell_text(tds[1])).strip()
+            if not name:
                 continue
             marks = {}
             for i, j in zip(judge_idx, judges):
-                raw = (cells[i] or "").lower().replace(" ", "")
-                marks[j] = _MARKS.get(raw, cells[i] or None)
-            entries.append({"role": role, "name": cells[1], "partner": None, "bib": cells[0],
-                            "rank": None, "place": None, "marks": marks,
-                            "counts": None, "score": _num(cells[sigma]),
-                            "advanced": None, "alternate": None})
-        # rank by score, highest first (the page lists rows in that order)
-        for i, e in enumerate(entries, 1):
-            e["rank"] = i
+                raw = _cell_text(tds[i])
+                if raw:
+                    marks[j] = _MARKS.get(raw.lower().replace(" ", ""), raw)
+            state = (tr.get("data-state") or "").strip().upper() or None
+            wsdc = link.get("data-wsdc") if link else None
+            entries.append({"role": role, "name": name, "partner": None, "bib": _cell_text(tds[0]),
+                            "rank": rank, "place": None, "marks": marks, "counts": None,
+                            "score": _num(_cell_text(tds[sigma])),
+                            "advanced": (state in _STATE_ADVANCED) if state else None,
+                            "alternate": state if state and state.startswith("ALT") else None,
+                            "wsdc_id": int(wsdc) if wsdc and wsdc.isdigit() else None,
+                            "state": state})
         sections.append({"title": round_title + (f" ({role}s)" if role and len(callback_tables) == 2 else ""),
                          "role": role, "round": info["round"], "division": info["division"],
                          "competed": len(entries), "judges": judges, "entries": entries})

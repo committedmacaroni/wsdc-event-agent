@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS event_series (
@@ -214,6 +214,10 @@ MIGRATIONS = {
     UPDATE events SET website_url = NULL
      WHERE source IN ('eepro', 'scoring_dance')
        AND (website_url LIKE '%eepro.com/results/%' OR website_url LIKE '%scoring.dance/%');
+    """,
+    7: """
+    ALTER TABLE scoresheet_entries ADD COLUMN wsdc_id INTEGER;
+    CREATE INDEX IF NOT EXISTS idx_sse_wsdc ON scoresheet_entries(wsdc_id);
     """,
 }
 

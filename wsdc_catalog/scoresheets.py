@@ -98,7 +98,8 @@ def store_sheet(conn, url: str, provider: str, event_key: str | None, event_id: 
             rows.append((url, event_id, provider, sec["title"], sec["division"], sec["round"], e["role"],
                          e["name"], normalize_text(e["name"]), e["partner"], e["bib"], e.get("place"),
                          e.get("rank"), json.dumps(e["marks"]), e["counts"], e["score"],
-                         None if e["advanced"] is None else int(e["advanced"]), e["alternate"], sec["competed"]))
+                         None if e["advanced"] is None else int(e["advanced"]), e["alternate"], sec["competed"],
+                         e.get("wsdc_id")))
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("DELETE FROM scoresheet_entries WHERE sheet_url=?", (url,))
@@ -115,7 +116,7 @@ def store_sheet(conn, url: str, provider: str, event_key: str | None, event_id: 
         conn.executemany(
             "INSERT INTO scoresheet_entries (sheet_url, event_id, provider, section, division, round, role, "
             "competitor_name, normalized_name, partner_name, bib, place, rank, marks, counts, score, advanced, "
-            "alternate, competed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            "alternate, competed, wsdc_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
         conn.execute("COMMIT")
     except BaseException:
         conn.execute("ROLLBACK")

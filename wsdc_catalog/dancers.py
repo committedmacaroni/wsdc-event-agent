@@ -52,9 +52,18 @@ def dancer_results(conn, name: str, *, wsdc_id=None, year: int | None = None,
     if len(norm) < 3:
         raise ValueError("name must be at least 3 characters")
 
+    registry = {"status": "skipped"}
+    if include_registry:
+        registry = _registry_for(conn, name, wsdc_id, registry_fetch)
+    known_id = registry["record"]["wsdc_id"] if registry.get("status") == "found" else (
+        int(wsdc_id) if wsdc_id and str(wsdc_id).isdigit() else None)
+
     rows = conn.execute(
         "SELECT se.*, s.provider_event_key FROM scoresheet_entries se "
-        "JOIN scoresheet_sheets s ON s.url = se.sheet_url WHERE se.normalized_name = ?", (norm,)).fetchall()
+        "JOIN scoresheet_sheets s ON s.url = se.sheet_url "
+        "WHERE (se.normalized_name = ? AND (se.wsdc_id IS NULL OR ? IS NULL OR se.wsdc_id = ?)) "
+        "OR (? IS NOT NULL AND se.wsdc_id = ?)",
+        (norm, known_id, known_id, known_id, known_id)).fetchall()
     by_event: dict = {}
     for r in rows:
         key = r["event_id"] or f"{r['provider']}:{r['provider_event_key']}"
@@ -66,9 +75,7 @@ def dancer_results(conn, name: str, *, wsdc_id=None, year: int | None = None,
                        "provider": ev["provider"], "divisions": _group_divisions(ev["rows"]),
                        "registry_results": []}
 
-    registry = {"status": "skipped"}
     if include_registry:
-        registry = _registry_for(conn, name, wsdc_id, registry_fetch)
         if registry["status"] == "found":
             rec = registry["record"]
             for p in rec["placements"]:

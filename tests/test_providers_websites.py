@@ -46,13 +46,18 @@ class TestScoringDanceParser(unittest.TestCase):
     def test_prelim(self):
         r = scoringdance.parse_sheet(read("sd_round_3073.html"))
         self.assertEqual(r["event_title"], "Swing Resolution 2025")
+        self.assertEqual(r["errors"], [])
         lead, follow = r["sections"]
-        self.assertEqual((lead["role"], lead["division"], lead["round"], lead["judges"]),
-                         ("leader", "Advanced", "prelims", ["JM", "N", "T", "PV", "GJ"]))
-        mark = lead["entries"][1]
-        self.assertEqual((mark["name"], mark["bib"], mark["score"], mark["marks"]["T"], mark["rank"]),
-                         ("Mark Miller", "7", 34.5, "A1", 2))
-        self.assertEqual(follow["entries"][1]["marks"]["LL"], "N")
+        self.assertEqual((lead["role"], lead["division"], lead["round"]), ("leader", "Advanced", "prelims"))
+        self.assertEqual(lead["judges"], ["Jeff Mumford", "Naomi", "Tren", "Patty Vo", "Gary Jobst"])
+        henry = lead["entries"][0]
+        self.assertEqual((henry["name"], henry["bib"], henry["wsdc_id"], henry["advanced"], henry["score"]),
+                         ("Henry Leonard", "4", 17901, True, 40.0))
+        self.assertNotIn("Gary Jobst", henry["marks"])  # head judge doesn't mark prelims
+        mark = lead["entries"][2]
+        self.assertEqual((mark["name"], mark["marks"]["Tren"], mark["rank"]), ("Mark Miller", "A1", 3))
+        self.assertFalse(lead["entries"][3]["advanced"])
+        self.assertEqual(follow["entries"][1]["marks"]["Lecie Langille"], "N")
 
     def test_unknown_final_layout_reported_not_guessed(self):
         r = scoringdance.parse_sheet(read("sd_round_3074.html"))
@@ -86,7 +91,7 @@ class TestWebsites(unittest.TestCase):
         out = dancer_results(self.conn, "Mark Miller", include_registry=False)
         self.assertEqual(out["events"][0]["event_id"], self.eid)
         rnd = out["events"][0]["divisions"][0]["rounds"][0]
-        self.assertEqual((rnd["round"], rnd["bib"], rnd["score"]), ("prelims", "7", 34.5))
+        self.assertEqual((rnd["round"], rnd["bib"], rnd["score"], rnd["advanced"]), ("prelims", "7", 34.5, True))
         self.assertEqual(out["events"][0]["website_results_links"][0]["text"], "Routines results (PDF)")
         self.assertTrue(get_event(self.conn, self.eid)["website_results_links"])
 
@@ -120,3 +125,24 @@ class TestWebsites(unittest.TestCase):
         self.assertEqual((reg["status"], reg["rounds"]), ("registered", 2))
         idx = index_provider_events(self.conn, provider="scoring_dance", fetch=fetcher(), now=NOW, delay=0)
         self.assertEqual(idx["sheets_indexed"], 2)
+
+
+class TestWsdcIdMatching(unittest.TestCase):
+    def setUp(self):
+        self.conn = mem()
+        add_scoring_dance_event(self.conn, "195", fetch=fetcher(), now=NOW)
+        index_provider_events(self.conn, provider="scoring_dance", fetch=fetcher(), now=NOW, delay=0)
+
+    def test_wsdc_id_matches_despite_spelling(self):
+        # Registry spells the name differently from the sheet; the WSDC id on the sheet still links them.
+        rec = {"leader": {"dancer": {"wscid": 17901}, "placements": []}, "follower": {"placements": []},
+               "dancer_first": "Henry", "dancer_last": "Leonard-Smith", "dancer_wsdcid": 17901}
+        out = dancer_results(self.conn, "Henry Leonard-Smith", wsdc_id="17901", registry_fetch=lambda q: rec)
+        self.assertEqual(out["total_events"], 1)
+        self.assertEqual(out["events"][0]["divisions"][0]["rounds"][0]["bib"], "4")
+
+    def test_same_name_different_dancer_excluded(self):
+        rec = {"leader": {"dancer": {"wscid": 99}, "placements": []}, "follower": {"placements": []},
+               "dancer_first": "Henry", "dancer_last": "Leonard", "dancer_wsdcid": 99}
+        out = dancer_results(self.conn, "Henry Leonard", wsdc_id="99", registry_fetch=lambda q: rec)
+        self.assertEqual(out["total_events"], 0)  # sheet says this Henry Leonard is #17901, not #99

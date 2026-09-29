@@ -419,13 +419,19 @@ The response:
 **Parsing:**
 
 - The results index yields the event name, the date (`at MM/DD/YYYY`) and the round links.
+- Live markup (captured 2026-09-29):
+  - The "Bib Number" header is an image with alt text.
+  - Each row carries `data-state` (`CB` = callback/advanced).
+  - Each name links to the dancer's WSDC registry profile (`data-wsdc`). This is stored as
+    `scoresheet_entries.wsdc_id`, and `/dancers/results` matches on it, so spelling differences
+    don't matter and same-name dancers stay separate.
+  - Judge headers carry the full name in `title`, which is stored instead of initials.
 - Prelim, quarter and semi pages (confirmed format): the heading
   `"<Division> Jack&Jill <round> results - <Event Year>"`, then one table per role, leaders
   first then followers.
   - Columns: Bib Number, name, judge initials, Σ.
   - Marks Yes/No/Alt1-3 become Y/N/A1-A3.
-- Rank is the row order (by score). Advancement isn't marked on the page, so `advanced` is
-  null.
+- Rank is the row order (by score).
 - **Finals:** the format hasn't been seen yet. Such pages report
   `unrecognized table format ... (finals layout not yet supported)` instead of guessing.
   Capture one (`scoresheets capture <url>`) to add support.
