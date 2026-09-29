@@ -14,7 +14,8 @@ from .enrichment import ImportError_, import_external_event
 from .fetcher import fetch_wsdc
 from .queries import QueryError, get_event, get_series, list_events, list_sync_runs
 from .registry import RegistryError, lookup_competitor, search_competitors
-from .scoresheets import coverage, discover_eepro_year, lookup_for_events, search_by_name
+from .dancers import dancer_results
+from .scoresheets import coverage, discover_eepro_year, index_eepro_year, lookup_for_events, search_by_name
 from .resolver import resolve_event
 from .sync import SyncAlreadyRunning, add_alias, run_wsdc_sync
 
@@ -190,6 +191,29 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
             return 200, lookup_for_events(conn, body.get("name") or "", ids,
                                           **({"fetch": sheet_fetch, "delay": 0} if sheet_fetch else {}))
 
+        def dancer(self, conn, params):
+            inc = str(params.get("include_registry", "true")).lower() not in ("0", "false", "no")
+            return 200, dancer_results(conn, params.get("name", ""), wsdc_id=params.get("wsdc_id") or None,
+                                       year=int(params["year"]) if params.get("year") else None,
+                                       include_registry=inc, **({"registry_fetch": registry_fetch}
+                                                                if registry_fetch else {}))
+
+        def scoresheet_index(self, conn, params):
+            body = self._body()
+            try:
+                years = [int(y) for y in (body.get("years") or [body.get("year")])]
+            except (TypeError, ValueError):
+                raise HttpError(400, "invalid_parameter", "year (or years) is required") from None
+
+            # Runs while the request is open: an active request keeps the Sprite awake, whereas
+            # background work after the response can be paused when the Sprite goes idle.
+            kw = {"fetch": sheet_fetch, "delay": 0} if sheet_fetch else {}
+            try:
+                runs = [index_eepro_year(conn, y, **kw) for y in years]
+            except RuntimeError as e:
+                raise HttpError(409, "index_in_progress", str(e)) from None
+            return 200, {"runs": runs}
+
         def scoresheet_discover(self, conn, params):
             body = self._body()
             try:
@@ -217,6 +241,8 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
         ("GET", r"/scoresheets/search", False, Handler.scoresheet_search),
         ("GET", r"/scoresheets/coverage", False, Handler.scoresheet_coverage),
         ("POST", r"/scoresheets/lookup", False, Handler.scoresheet_lookup),
+        ("GET", r"/dancers/results", False, Handler.dancer),
+        ("POST", r"/admin/scoresheets/index", True, Handler.scoresheet_index),
         ("POST", r"/admin/scoresheets/discover", True, Handler.scoresheet_discover),
         ("POST", r"/admin/sync-events", True, Handler.sync),
         ("GET", r"/admin/sync-runs", True, Handler.sync_runs),

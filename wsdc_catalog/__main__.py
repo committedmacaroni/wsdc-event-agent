@@ -13,7 +13,8 @@ from .db import connect
 from .fetcher import fetch_wsdc, file_fetcher
 from .queries import list_events, list_sync_runs
 from .registry import lookup_competitor, search_competitors
-from .scoresheets import coverage, discover_eepro_year, lookup_for_events, search_by_name
+from .dancers import dancer_results
+from .scoresheets import coverage, discover_eepro_year, index_eepro_year, lookup_for_events, search_by_name
 from .scheduler import DailySyncScheduler
 from .sync import SyncAlreadyRunning, run_wsdc_sync
 
@@ -45,6 +46,8 @@ def main(argv=None) -> int:
     ssub = ss.add_subparsers(dest="ss_cmd", required=True)
     sd = ssub.add_parser("discover", help="add a provider's past events to the catalog (no score sheets)")
     sd.add_argument("--year", type=int, action="append", required=True, help="repeatable")
+    sx = ssub.add_parser("index", help="download and index every sheet for a year (backfill; safe to re-run)")
+    sx.add_argument("--year", type=int, action="append", required=True, help="repeatable")
     sl = ssub.add_parser("lookup", help="fetch sheets for selected events and find a dancer")
     sl.add_argument("name")
     sl.add_argument("--event", action="append", required=True, help="catalog event id (repeatable)")
@@ -54,6 +57,10 @@ def main(argv=None) -> int:
     sp = ssub.add_parser("parse", help="debug: fetch one sheet URL and show what the parser sees")
     sp.add_argument("url")
     ssub.add_parser("coverage")
+    d = sub.add_parser("dancer", help="everything for a dancer name (what Replit's search returns)")
+    d.add_argument("name")
+    d.add_argument("--wsdc-id")
+    d.add_argument("--year", type=int)
     e = sub.add_parser("events")
     e.add_argument("params", nargs="*", help="filters as key=value, e.g. year=2026 country=USA")
     args = p.parse_args(argv)
@@ -98,6 +105,9 @@ def main(argv=None) -> int:
         conn = connect(cfg.db_path)
         if args.ss_cmd == "discover":
             _print([discover_eepro_year(conn, y) for y in args.year])
+        elif args.ss_cmd == "index":
+            for y in args.year:
+                _print(index_eepro_year(conn, y))
         elif args.ss_cmd == "lookup":
             _print(lookup_for_events(conn, args.name, args.event))
         elif args.ss_cmd == "search":
@@ -116,6 +126,8 @@ def main(argv=None) -> int:
                       f"{e0['name']} bib {e0['bib']} marks {e0['marks']}")
             for err in r["errors"][:10]:
                 print("  ERROR", err)
+    elif args.cmd == "dancer":
+        _print(dancer_results(connect(cfg.db_path), args.name, wsdc_id=args.wsdc_id, year=args.year))
     elif args.cmd == "events":
         _print(list_events(connect(cfg.db_path), dict(kv.split("=", 1) for kv in args.params)))
     return 0

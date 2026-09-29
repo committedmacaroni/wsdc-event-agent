@@ -62,7 +62,20 @@ The same data is available over the API:
 Both require the read key. The registry only lists results that earned points; score sheets
 (all rounds) are the next phase.
 
-## Score sheets (on demand)
+## Dancer results (what Replit calls)
+
+```bash
+python -m wsdc_catalog scoresheets index --year 2025 --year 2026   # one-time backfill; safe to re-run
+python -m wsdc_catalog dancer "Emily Madden"                        # same data as GET /dancers/results
+```
+
+Replit makes one call, `GET /dancers/results?name=Emily%20Madden` (read key), and gets every
+event the name appears on, plus the dancer's WSDC registry record.
+
+For daily upkeep, schedule `POST /admin/scoresheets/index {"year": 2026}` (admin key) to run
+after `POST /admin/sync-events`.
+
+## Score sheets (on demand, per selected event)
 
 Sheets are fetched only for events a dancer selects:
 

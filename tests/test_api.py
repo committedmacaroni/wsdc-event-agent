@@ -129,3 +129,15 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(res["events"][0]["divisions"][-1]["final_place"], 1)
         self.assertEqual(self.req("POST", "/scoresheets/lookup", body={"name": "Emily Madden"})[0], 400)
         self.assertEqual(self.req("GET", "/scoresheets/coverage")[0], 200)
+
+    def test_dancer_results_endpoint(self):
+        self.assertEqual(self.req("POST", "/admin/scoresheets/index", key="read-key", body={"year": 2026})[0], 401)
+        status, out = self.req("POST", "/admin/scoresheets/index", key="admin-key", body={"year": 2026})
+        self.assertEqual((status, out["runs"][0]["status"]), (200, "success"))
+        status, res = self.req("GET", "/dancers/results?name=Emily%20Madden&include_registry=false")
+        self.assertEqual((status, res["total_events"]), (200, 1))
+        self.assertEqual(res["events"][0]["divisions"][0]["final_place"], 1)
+        status, res = self.req("GET", "/dancers/results?name=Toni%20Watt")
+        self.assertEqual((status, res["registry"]["status"], res["total_events"]), (200, "found", 1))
+        self.assertEqual(self.req("GET", "/dancers/results?name=ab")[0], 400)
+        self.assertEqual(self.req("GET", "/dancers/results?name=Emily%20Madden", key=None)[0], 401)

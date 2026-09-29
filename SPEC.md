@@ -347,3 +347,62 @@ follower entries. PDF result pages are listed but not parsed.
 - **Remaining providers:** Danceconvention, Danceplace, EventManagement, Scoring.Dance,
   Swing Director, SwingWars, Vote4Dance and World Dance Registry. Each adapter supplies
   `parse_index` and `parse_sheet` in the same shapes.
+
+## 13. Dancer results: name in, every event out (v0.5)
+
+This supersedes the pick-events flow for Replit's search. **Replit sends a name and only
+displays what comes back**; the agent does all of the searching.
+
+### How the agent finds events
+
+The agent can only know which events a name appears on by having read those sheets, so it
+indexes them ahead of time.
+
+**Backfill, once per year of history:**
+
+- CLI: `python -m wsdc_catalog scoresheets index --year 2025 --year 2026`
+- Runs about 1 s per sheet, and is safe to re-run: sheets already indexed are skipped.
+
+**Daily upkeep:**
+
+- Call `POST /admin/scoresheets/index {"year": <current year>}` with the admin key after the
+  calendar sync.
+- It runs while the request is open (an active request keeps the Sprite awake; background
+  work can be paused when the Sprite idles), and returns the run summary.
+- It only downloads new sheets, plus re-checks events that ended in the last 14 days.
+- `409` means an indexing run is already in progress.
+
+### Endpoint
+
+`GET /dancers/results?name=<name>` (read key). Optional parameters:
+
+| Parameter | Effect |
+|---|---|
+| `wsdc_id` | Picks the registry dancer when several share a name |
+| `year` | Limits results to one year |
+| `include_registry=false` | Skips the registry lookup |
+
+The response:
+
+```
+{ name, total_events,
+  events: [ { event_id, event_name, start_date, end_date, date_precision, city, region, country,
+              sources: ["scoresheets", "wsdc_registry"],
+              provider,
+              divisions: [ { division, role, furthest_round, final_place,
+                             rounds: [ { round, bib, partner, rank, place, marks, counts, score,
+                                         advanced, alternate, competed, sheet_url } ] } ],
+              registry_results: [ { role, division, division_abbr, result, points } ] } ],
+  registry: { status: found | not_found | multiple | unavailable | skipped,
+              wsdc_id, first_name, last_name, level_allowed, primary, secondary, candidates? },
+  coverage: { providers, years: [ { year, events, sheets_indexed, last_indexed_at } ] } }
+```
+
+- **Events** are sorted newest first.
+- **Score-sheet matching** is an exact name match (case and accents ignored).
+- **The registry** is included when the name matches exactly one WSDC dancer, or when
+  `wsdc_id` is given. It adds point-earning results at events whose sheets aren't indexed
+  (for example, providers not yet supported); those events have
+  `sources == ["wsdc_registry"]` and no `divisions`.
+- **If the registry is unreachable**, the response still returns score-sheet results, with
+  `registry.status = "unavailable"`.

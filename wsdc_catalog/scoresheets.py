@@ -274,3 +274,74 @@ def coverage(conn) -> dict:
         "sheets_cached": [dict(r) for r in conn.execute(
             "SELECT provider, status, COUNT(*) n FROM scoresheet_sheets GROUP BY provider, status")],
     }
+
+
+# ------------------------------------------------------------------ background indexing
+INDEX_REQUEST_DELAY = 1.0  # seconds between sheet downloads during background indexing
+
+
+def index_eepro_year(conn, year: int, *, fetch=fetch_html, now: datetime | None = None,
+                     delay: float = INDEX_REQUEST_DELAY) -> dict:
+    """Discover a year's eepro events, then download and index every sheet not already indexed.
+
+    Already-indexed sheets are skipped (except for events that ended in the last 14 days,
+    which are re-checked for corrections), so re-running is cheap.
+    """
+    now = now or utcnow()
+    ts = iso(now)
+    index_url = eepro.INDEX_URL.format(year=year)
+    source = f"index:{eepro.PROVIDER}"
+    running = conn.execute("SELECT id, started_at FROM sync_runs WHERE source=? AND status='running'",
+                           (source,)).fetchone()
+    if running and now - datetime.fromisoformat(running["started_at"].replace("Z", "+00:00")) < timedelta(hours=3):
+        raise RuntimeError(f"score-sheet indexing run {running['id']} is already in progress")
+    if running:
+        conn.execute("UPDATE sync_runs SET status='failed', completed_at=? WHERE id=?", (ts, running["id"]))
+
+    discovery = discover_eepro_year(conn, year, fetch=fetch, now=now)
+    run_id = conn.execute("INSERT INTO sync_runs (source, source_url, started_at, status) VALUES (?,?,?, 'running')",
+                          (source, index_url, ts)).lastrowid
+    stats = {"events": 0, "sheets_indexed": 0, "sheets_already_indexed": 0, "sheets_skipped_pdf": 0,
+             "sheets_failed": 0, "entries": 0}
+    errors = list(discovery["errors"])
+    status = "success" if discovery["status"] == "success" else "failed"
+    if status == "success":
+        pes = conn.execute("SELECT * FROM provider_events WHERE provider=? AND index_url=? ORDER BY start_date DESC",
+                           (eepro.PROVIDER, index_url)).fetchall()
+        for pe in pes:
+            stats["events"] += 1
+            for title, url in json.loads(pe["links"]):
+                if not url.lower().endswith((".html", ".htm")):
+                    stats["sheets_skipped_pdf"] += 1
+                    continue
+                if _sheet_is_fresh(conn, url, pe["end_date"], now):
+                    stats["sheets_already_indexed"] += 1
+                    continue
+                try:
+                    html = fetch(url)
+                    parsed = eepro.parse_sheet(html)
+                    stats["entries"] += store_sheet(conn, url, pe["provider"], pe["provider_key"], pe["event_id"],
+                                                    parsed, html, iso(utcnow()))
+                    stats["sheets_indexed"] += 1
+                    errors += [f"{url}: {e}" for e in parsed["errors"][:3]]
+                except Exception as e:  # noqa: BLE001
+                    stats["sheets_failed"] += 1
+                    errors.append(f"{url}: {type(e).__name__}: {e}")
+                if delay:
+                    time.sleep(delay)
+    conn.execute("UPDATE sync_runs SET status=?, completed_at=?, records_found=?, records_added=?, "
+                 "records_updated=?, records_unchanged=?, records_skipped=?, errors=? WHERE id=?",
+                 (status, iso(utcnow()), stats["events"], stats["entries"], stats["sheets_indexed"],
+                  stats["sheets_already_indexed"], stats["sheets_skipped_pdf"], json.dumps(errors[:200]), run_id))
+    return {"run_id": run_id, "status": status, "provider": eepro.PROVIDER, "year": year, **stats,
+            "errors": errors[:50]}
+
+
+def index_status(conn) -> dict:
+    years = [dict(r) for r in conn.execute(
+        "SELECT substr(pe.start_date,1,4) AS year, COUNT(DISTINCT pe.provider_key) AS events, "
+        "COUNT(DISTINCT s.url) AS sheets_indexed, MAX(s.fetched_at) AS last_indexed_at "
+        "FROM provider_events pe LEFT JOIN scoresheet_sheets s ON s.provider_event_key = pe.provider_key "
+        "AND s.status IN ('parsed','empty') GROUP BY 1 ORDER BY 1")]
+    return {"providers": sorted({r[0] for r in conn.execute("SELECT DISTINCT provider FROM provider_events")}),
+            "years": years}
