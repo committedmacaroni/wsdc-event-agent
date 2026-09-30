@@ -227,3 +227,38 @@ class TestFinalsMergeSources(unittest.TestCase):
         self.assertEqual(len(fin), 1)
         self.assertEqual((fin[0]["place"], fin[0]["points"], fin[0]["source"]), (2, 3, "scoresheets+wsdc_registry"))
         self.assertTrue(out["summary"]["callback_data_available"])
+
+
+class TestRoles(unittest.TestCase):
+    def test_primary_and_secondary_from_registry(self):
+        conn = mem()
+        out = dancer_results(conn, "Toni Watt", registry_fetch=registry({"Toni Watt": TONI, "29012": TONI}))
+        r = out["roles"]
+        self.assertEqual(r["source"], "wsdc_registry")
+        self.assertEqual((r["primary"]["role"], r["primary"]["role_label"], r["primary"]["level_allowed"],
+                          r["primary"]["highest_level"], r["primary"]["wsdc_points"]),
+                         ("follower", "Follower", "NOV", "Novice", 1))
+        sec = r["secondary"]
+        self.assertEqual((sec["role"], sec["level_allowed"], sec["level_required"], sec["highest_level"]),
+                         ("leader", "NEW", "NEW", None))  # "N/A" -> null
+        self.assertIn("secondary role", sec["rule"])
+        self.assertEqual(out["registry"]["primary_role"], "follower")
+        self.assertNotIn("_record", out["registry"])
+
+    def test_summary_by_role(self):
+        conn = mem()
+        run_wsdc_sync(conn, day1_fetch(), now=DAY1)
+        index_eepro_year(conn, 2026, fetch=fetcher(), now=NOW, delay=0)
+        out = dancer_results(conn, "Andrew Opyrchal", include_registry=False)  # leads All-In only
+        self.assertEqual(list(out["summary"]["by_role"]), ["leader"])
+        self.assertEqual(out["roles"]["primary"]["role"], "leader")
+        self.assertEqual(out["roles"]["source"], "scoresheets")
+        lead = out["summary"]["by_role"]["leader"]
+        self.assertEqual((lead["finals_made"], lead["best_final_place"]), (1, 2))
+
+    def test_points_by_role(self):
+        conn = mem()
+        out = dancer_results(conn, "Rose Landay", registry_fetch=registry({"Rose Landay": NAMES, "4242": ROSE}))
+        self.assertEqual(out["summary"]["by_role"]["follower"]["wsdc_points"], 4)
+        self.assertEqual(out["roles"]["primary"]["wsdc_points"], 4)
+        self.assertEqual({a["role"] for a in out["wsdc_points"]["awards"]}, {"follower"})

@@ -138,9 +138,14 @@ def parse_find(payload) -> dict:
                     })
     placements.sort(key=lambda p: (p["registry_event"]["month"] or ""), reverse=True)
 
+    def _na(v):
+        return None if v in (None, "", "N/A", "n/a") else v
+
     def role_summary(block_key, level_key, points_key):
-        return {"role": payload.get(block_key), "highest_level": payload.get(level_key),
-                "highest_level_points": payload.get(points_key)}
+        return {"role": payload.get(block_key), "highest_level": _na(payload.get(level_key)),
+                "highest_level_points": _na(payload.get(points_key))}
+
+    nd = (payload.get("non_dominate_lookup") or [{}])[0] if isinstance(payload.get("non_dominate_lookup"), list) else {}
 
     return {
         "type": "dancer",
@@ -153,8 +158,12 @@ def parse_find(payload) -> dict:
                                 "dominate_role_highest_level_points"),
         "secondary": role_summary("short_non_dominate_role", "non_dominate_role_highest_level",
                                   "non_dominate_role_highest_level_points"),
-        "level_required": payload.get("dominate_required"),
-        "level_allowed": payload.get("dominate_allowed"),
+        "level_required": _na(payload.get("dominate_required")),
+        "level_allowed": _na(payload.get("dominate_allowed")),
+        "secondary_level_required": _na(nd.get("non_dominate_required")),
+        "secondary_level_allowed": _na(nd.get("non_dominate_allowed")),
+        "secondary_level_recommended": _na(nd.get("non_dominate_recommended")),
+        "secondary_rule": _na(re.sub(r"<[^>]+>", " ", nd.get("message") or "").strip()),
         "is_pro": bool(payload.get("is_pro")),
         "placements": placements,
     }

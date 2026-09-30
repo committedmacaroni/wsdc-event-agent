@@ -91,12 +91,12 @@ def dancer_results(conn, name: str, *, wsdc_id=None, year: int | None = None,
                 if "wsdc_registry" not in ev["sources"]:
                     ev["sources"].append("wsdc_registry")
                 ev["registry_results"].append({
-                    "role": p["role"], "division": p["division"], "division_abbr": p["division_abbr"],
+                    "role": _role(p["role"]), "division": p["division"], "division_abbr": p["division_abbr"],
                     "result": p["result"], "points": p["points"]})
             registry = {"status": "found", "wsdc_id": rec["wsdc_id"], "first_name": rec["first_name"],
-                        "last_name": rec["last_name"], "primary_role": rec["primary_role"],
+                        "last_name": rec["last_name"], "primary_role": _role(rec["primary_role"]),
                         "level_allowed": rec["level_allowed"], "primary": rec["primary"],
-                        "secondary": rec["secondary"]}
+                        "secondary": rec["secondary"], "_record": rec}
 
     for ev in events.values():
         wc = conn.execute("SELECT other_links FROM website_checks WHERE event_id=?",
@@ -106,9 +106,14 @@ def dancer_results(conn, name: str, *, wsdc_id=None, year: int | None = None,
     if year:
         items = [e for e in items if (e.get("start_date") or "").startswith(str(year))]
     items.sort(key=lambda e: e.get("start_date") or "", reverse=True)
+    rec = registry.pop("_record", None) if isinstance(registry, dict) else None
     return {
         "name": name, "normalized_name": norm, "total_events": len(items), "events": items,
-        "summary": _summary(items, registry), "progress": _progress(items),
+        "roles": _roles(items, rec),
+        "summary": {**_summary(items, registry), "by_role": {
+            role: _summary(_filter_role(items, role), registry, points_role=role)
+            for role in _competed_roles(items)}},
+        "progress": _progress(items),
         "wsdc_points": _points(items),
         "judges": _judges(items, alias_map(conn)),
         "registry": registry, "coverage": index_status(conn),
@@ -216,7 +221,7 @@ def _same_division(a, b) -> bool:
     return normalize_text(a or "") == normalize_text(b or "")
 
 
-def _summary(items, registry) -> dict:
+def _summary(items, registry, points_role=None) -> dict:
     rounds = list(_iter_rounds(items))
     callbacks = [r for _, _, r in rounds if not r["is_final"] and r.get("callback_pct") is not None]
     decided = [r for r in callbacks if r["advanced"] is not None]
@@ -237,8 +242,9 @@ def _summary(items, registry) -> dict:
         "avg_callback_pct": round(sum(r["callback_pct"] for r in callbacks) / len(callbacks), 1) if callbacks else None,
         "callback_note": None if have_callbacks else
             "No prelim/semi score sheets indexed for this dancer yet, so callback stats aren't available.",
-        "wsdc_points": sum((p.get("points") or 0) for e in items for p in e.get("registry_results", [])) or None,
-        "level_allowed": registry.get("level_allowed") if isinstance(registry, dict) else None,
+        "wsdc_points": sum((p.get("points") or 0) for e in items for p in e.get("registry_results", [])
+                           if points_role is None or p.get("role") == points_role) or None,
+        "level_allowed": registry.get("level_allowed") if isinstance(registry, dict) and points_role is None else None,
     }
 
 
@@ -273,3 +279,70 @@ def _points(items) -> dict:
         t["results"] += 1
     return {"total": sum(a["points"] for a in awards), "awards": awards,
             "by_division": sorted(totals.values(), key=lambda t: (-t["points"], t["division"] or ""))}
+
+
+# ------------------------------------------------------------------ roles
+def _role(value) -> str | None:
+    """'Follower' / 'follower' / 'FOLLOWER' -> 'follower'."""
+    v = normalize_text(value or "")
+    return {"leader": "leader", "lead": "leader", "follower": "follower", "follow": "follower"}.get(v, v or None)
+
+
+def _competed_roles(items) -> list[str]:
+    seen = []
+    for ev in items:
+        for d in ev.get("divisions", []):
+            if d.get("role") and d["role"] not in seen:
+                seen.append(d["role"])
+        for r in ev.get("registry_results", []):
+            if r.get("role") and r["role"] not in seen:
+                seen.append(r["role"])
+    return sorted(seen)
+
+
+def _filter_role(items, role) -> list[dict]:
+    out = []
+    for ev in items:
+        divs = [d for d in ev.get("divisions", []) if d.get("role") == role]
+        regs = [r for r in ev.get("registry_results", []) if r.get("role") == role]
+        if divs or regs:
+            out.append({**ev, "divisions": divs, "registry_results": regs})
+    return out
+
+
+def _roles(items, rec) -> dict:
+    """Primary/secondary role with levels (from the WSDC registry when available)."""
+    points = {}
+    for ev in items:
+        for r in ev.get("registry_results", []):
+            points[r["role"]] = points.get(r["role"], 0) + (r.get("points") or 0)
+    competed = _competed_roles(items)
+
+    def block(role, level_allowed, level_required, highest, highest_pts, recommended=None, rule=None):
+        if not role:
+            return None
+        return {"role": role, "role_label": role.capitalize(), "level_allowed": level_allowed,
+                "level_required": level_required, "level_recommended": recommended,
+                "highest_level": highest, "highest_level_points": highest_pts,
+                "wsdc_points": points.get(role, 0), "rule": rule}
+
+    if rec:
+        p_role, s_role = _role(rec.get("primary_role")), _role(rec.get("secondary_role"))
+        return {
+            "source": "wsdc_registry", "competed_roles": competed,
+            "primary": block(p_role, rec.get("level_allowed"), rec.get("level_required"),
+                             rec["primary"].get("highest_level"), rec["primary"].get("highest_level_points")),
+            "secondary": block(s_role, rec.get("secondary_level_allowed"), rec.get("secondary_level_required"),
+                               rec["secondary"].get("highest_level"), rec["secondary"].get("highest_level_points"),
+                               rec.get("secondary_level_recommended"), rec.get("secondary_rule")),
+        }
+    # No registry record: infer primary role from where the dancer has the most results.
+    counts = {r: 0 for r in competed}
+    for ev in items:
+        for d in ev.get("divisions", []):
+            if d.get("role"):
+                counts[d["role"]] += len(d["rounds"])
+    ordered = sorted(counts, key=lambda r: -counts[r])
+    return {"source": "scoresheets" if ordered else None, "competed_roles": competed,
+            "primary": block(ordered[0], None, None, None, None) if ordered else None,
+            "secondary": block(ordered[1], None, None, None, None) if len(ordered) > 1 else None}
