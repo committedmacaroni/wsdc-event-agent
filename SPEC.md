@@ -546,3 +546,16 @@ In `/dancers/results`, `judges[]` is grouped by resolved identity. Each judge ad
   event_name, city, country, division, division_abbr, role, result, `result_label`
   ("1st"–"5th", or "Finalist" for code F), points.
 - `by_division[]`: `{division, division_abbr, role, points, results}`, highest points first.
+
+## 18. Finals and callback stats fix (v0.8.2)
+
+- **Every WSDC registry result counts as a final**, since points are only awarded in finals.
+  `progress.finals[]` merges score-sheet finals and registry results. A result present in
+  both sources appears once, with `source: "scoresheets+wsdc_registry"`.
+  - Each final carries `result_label` ("1st" or "Finalist"), `points`, `date_precision` and
+    `source`.
+- **`summary.finals_made`** counts those finals. **`best_final_label`** gives "3rd", or
+  "Finalist" when the dancer made finals without a placement.
+- **Callback stats never read 0 when there's no data.** `summary.callback_data_available`
+  is false and `callback_note` explains why. `avg_callback_pct` and `advancement_rate` are
+  null in that case.

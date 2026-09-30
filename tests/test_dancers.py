@@ -181,3 +181,49 @@ class TestPointsList(unittest.TestCase):
         conn = mem()
         out = dancer_results(conn, "Nobody Here", registry_fetch=registry({}))
         self.assertEqual(out["wsdc_points"], {"total": 0, "awards": [], "by_division": []})
+
+
+class TestRegistryOnlyDancer(unittest.TestCase):
+    """Screenshot case: all results come from the registry (finalist results, no sheets)."""
+
+    def setUp(self):
+        self.conn = mem()
+        rec = {"follower": {"placements": []}, "leader": {"dancer": {"wscid": 7}, "placements": {
+            "West Coast Swing": {"INT": {"division": {"name": "Intermediate", "abbreviation": "INT"}, "competitions": [
+                {"role": "leader", "points": 2, "result": "F",
+                 "event": {"id": 1, "name": "Swingtacular", "location": "San Francisco, CA, USA", "date": "August 2026"}},
+                {"role": "leader", "points": 6, "result": "3",
+                 "event": {"id": 2, "name": "SOswing", "location": "Ashland, OR, USA", "date": "May 2026"}}]}}}},
+            "dancer_first": "Robert", "dancer_last": "Burtt", "dancer_wsdcid": 7, "dominate_allowed": "INT"}
+        self.out = dancer_results(self.conn, "Robert Burtt", registry_fetch=registry({"Robert Burtt": rec, "7": rec}))
+
+    def test_registry_results_count_as_finals(self):
+        s = self.out["summary"]
+        self.assertEqual((s["finals_made"], s["best_final_place"], s["best_final_label"]), (2, 3, "3rd"))
+        fin = self.out["progress"]["finals"]
+        self.assertEqual([(f["event_name"], f["result_label"], f["points"], f["date_precision"]) for f in fin],
+                         [("SOswing", "3rd", 6, "month"), ("Swingtacular", "Finalist", 2, "month")])
+
+    def test_callback_stats_unavailable_not_zero(self):
+        s = self.out["summary"]
+        self.assertFalse(s["callback_data_available"])
+        self.assertIsNone(s["avg_callback_pct"])
+        self.assertIsNone(s["advancement_rate"])
+        self.assertIn("aren't available", s["callback_note"])
+
+
+class TestFinalsMergeSources(unittest.TestCase):
+    def test_sheet_final_and_registry_result_not_double_counted(self):
+        conn = mem()
+        run_wsdc_sync(conn, day1_fetch(), now=DAY1)
+        index_eepro_year(conn, 2026, fetch=fetcher(), now=NOW, delay=0)
+        rec = {"follower": {"placements": {"West Coast Swing": {"ALL": {
+            "division": {"name": "All-In", "abbreviation": "ALL"}, "competitions": [
+                {"role": "follower", "points": 3, "result": "2",
+                 "event": {"id": 77, "name": "SwingTime", "location": "Denver, CO, USA", "date": "September 2026"}}]}}}},
+               "leader": {"placements": []}, "dancer_first": "Rose", "dancer_last": "Landay", "dancer_wsdcid": 4242}
+        out = dancer_results(conn, "Rose Landay", wsdc_id="4242", registry_fetch=registry({"4242": rec}))
+        fin = out["progress"]["finals"]
+        self.assertEqual(len(fin), 1)
+        self.assertEqual((fin[0]["place"], fin[0]["points"], fin[0]["source"]), (2, 3, "scoresheets+wsdc_registry"))
+        self.assertTrue(out["summary"]["callback_data_available"])
