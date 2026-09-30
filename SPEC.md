@@ -630,3 +630,29 @@ Events from the same source are never merged.
   `competition_type_label`. Divisions are grouped by label, type and role.
 - Score sheets not linked to a catalog event are still returned with the provider's event
   name and dates.
+
+## 21. scoring.dance bulk discovery (v0.10)
+
+scoring.dance has no event list, so events were only found when an event website linked
+them or they were added by number. `scan_scoring_dance()` walks the sequential event numbers
+instead.
+
+**Commands:** `scoresheets scoring-dance-scan [--from N] [--to M]`, or
+`POST /admin/scoresheets/scoring-dance/scan {"from": N, "to": M}`.
+
+**How a scan runs:**
+
+- **Backfill** (`--from 1`, no end): walks forward until 40 numbers in a row don't exist
+  (404s are expected and aren't reported as errors).
+- **Daily** (no arguments): re-reads the last 30 known numbers and any event from the last
+  30 days (new rounds get posted), then continues past the highest known number.
+- **Skipping:** events already registered and older than 30 days are skipped, so re-running
+  is cheap and resumes after interruptions.
+
+**What happens to each event found:**
+
+- It's registered, linked to or merged into the catalog, and its sheets are indexed.
+- If the event's round list has no date, the date and event name come from the first round
+  page.
+
+The daily scheduler runs the incremental scan.

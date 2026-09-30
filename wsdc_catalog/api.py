@@ -253,6 +253,14 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
             from .judges import rebuild
             return 200, rebuild(conn)
 
+        def scoresheet_scoring_dance_scan(self, conn, params):
+            from .websites import scan_scoring_dance
+            body = self._body()
+            kw = {"fetch": sheet_fetch, "delay": 0} if sheet_fetch else {}
+            rep = scan_scoring_dance(conn, start=body.get("from"), end=body.get("to"), **kw)
+            rep["events"] = rep["events"][-50:]
+            return 200, rep
+
         def scoresheet_discover(self, conn, params):
             body = self._body()
             try:
@@ -288,6 +296,7 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
         ("POST", r"/admin/events/dedupe", True, Handler.dedupe),
         ("POST", r"/admin/scoresheets/websites", True, Handler.scoresheet_websites),
         ("POST", r"/admin/scoresheets/scoring-dance", True, Handler.scoresheet_scoring_dance),
+        ("POST", r"/admin/scoresheets/scoring-dance/scan", True, Handler.scoresheet_scoring_dance_scan),
         ("POST", r"/admin/scoresheets/discover", True, Handler.scoresheet_discover),
         ("POST", r"/admin/sync-events", True, Handler.sync),
         ("GET", r"/admin/sync-runs", True, Handler.sync_runs),

@@ -54,6 +54,9 @@ def main(argv=None) -> int:
     sw.add_argument("--event", action="append", help="only these catalog event ids (repeatable)")
     sd2 = ssub.add_parser("scoring-dance", help="register + index scoring.dance events by event number")
     sd2.add_argument("--number", action="append", required=True, help="the number in scoring.dance/.../events/<n>/")
+    ss2 = ssub.add_parser("scoring-dance-scan", help="find every scoring.dance event by walking event numbers")
+    ss2.add_argument("--from", dest="start", type=int, help="first event number (1 for a full backfill)")
+    ss2.add_argument("--to", dest="end", type=int, help="last event number (default: stop after 40 missing)")
     sc = ssub.add_parser("capture", help="save a results page's HTML to data/captures/ and show how it parses")
     sc.add_argument("url")
     sl = ssub.add_parser("lookup", help="fetch sheets for selected events and find a dancer")
@@ -135,6 +138,11 @@ def main(argv=None) -> int:
         elif args.ss_cmd == "websites":
             from .websites import discover_from_websites
             _print(discover_from_websites(conn, limit=args.limit, event_ids=args.event))
+        elif args.ss_cmd == "scoring-dance-scan":
+            from .websites import scan_scoring_dance
+            rep = scan_scoring_dance(conn, start=args.start, end=args.end)
+            rep["events"] = rep["events"][-20:]
+            _print(rep)
         elif args.ss_cmd == "scoring-dance":
             from .scoresheets import index_provider_events
             from .websites import add_scoring_dance_event

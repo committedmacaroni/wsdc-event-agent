@@ -64,6 +64,15 @@ def parse_results_index(html: str, number: str) -> dict:
     return {"name": name, "date": when, "links": links}
 
 
+def parse_round_meta(html: str) -> dict:
+    """Event name and date from a round page ("... - <Event>" heading, "... at MM/DD/YYYY")."""
+    soup = BeautifulSoup(html or "", "lxml")
+    title = next((h.get_text(" ", strip=True) for h in soup.find_all("h1") if " - " in h.get_text()), "")
+    dm = _DATE_RE.search(soup.get_text(" "))
+    return {"event_name": title.split(" - ", 1)[1].strip() if " - " in title else None,
+            "date": date(int(dm.group(3)), int(dm.group(1)), int(dm.group(2))) if dm else None}
+
+
 def _num(text: str) -> float | None:
     try:
         return float(text.replace(",", "."))

@@ -93,6 +93,14 @@ def add_scoring_dance_event(conn, number: str, *, fetch=fetch_html, now=None, ca
     info = scoringdance.parse_results_index(fetch(scoringdance.results_index_url(number)), number)
     if not info["links"]:
         return {"number": number, "status": "no_results", "event_id": None}
+    if info["date"] is None or not info["name"]:
+        # The round pages reliably state "... during <Event> ... at MM/DD/YYYY": use the first one.
+        try:
+            first = scoringdance.parse_round_meta(fetch(info["links"][0][1]))
+            info["date"] = info["date"] or first["date"]
+            info["name"] = info["name"] or first["event_name"]
+        except Exception:  # noqa: BLE001 - registration still proceeds without a date
+            pass
     event_id = None
     if catalog_event is not None and _dates_agree(catalog_event, info["date"]):
         event_id = catalog_event["id"]
@@ -184,6 +192,73 @@ def discover_from_websites(conn, *, fetch=fetch_html, now: datetime | None = Non
         report["events"].append(entry)
         if delay:
             time.sleep(delay)
+    if index:
+        report["indexing"] = index_provider_events(conn, provider=scoringdance.PROVIDER, fetch=fetch, now=now,
+                                                   delay=delay)
+    return report
+
+
+# ------------------------------------------------------------------ scoring.dance bulk discovery
+SD_MISS_LIMIT = 40          # stop an open-ended scan after this many consecutive missing event numbers
+SD_RECENT_DAYS = 30         # re-read round lists for events this recent (new rounds get posted)
+
+
+def scan_scoring_dance(conn, *, start: int | None = None, end: int | None = None, fetch=fetch_html,
+                       now: datetime | None = None, delay: float = 1.0, index: bool = True) -> dict:
+    """Walk scoring.dance event numbers and register every event that has results.
+
+    - Backfill: start=1 (and no end) walks forward until SD_MISS_LIMIT numbers in a row don't exist.
+    - Daily (no start/end): re-checks the last 30 numbers known, events from the last 30 days, then
+      continues past the highest known number until the miss limit.
+    Already-registered events older than 30 days are skipped, so re-running is cheap.
+    """
+    now = now or utcnow()
+    known = {int(r["provider_key"]): r for r in conn.execute(
+        "SELECT provider_key, start_date, fetched_at FROM provider_events WHERE provider=?",
+        (scoringdance.PROVIDER,)) if str(r["provider_key"]).isdigit()}
+    recent_cut = (now.date() - timedelta(days=SD_RECENT_DAYS)).isoformat()
+    if start is None:
+        top = max(known) if known else 0
+        start = max(1, top - 30)
+        recheck = sorted(n for n, r in known.items() if (r["start_date"] or "") >= recent_cut and n < start)
+    else:
+        recheck = []
+    report = {"checked": 0, "registered": 0, "no_results": 0, "missing": 0, "skipped_known": 0,
+              "highest_found": max(known) if known else None, "errors": [], "events": []}
+
+    def visit(n: int) -> bool:
+        """Returns True if the event number exists."""
+        r = known.get(n)
+        if r and (r["start_date"] or "9999") < recent_cut:
+            report["skipped_known"] += 1
+            return True
+        report["checked"] += 1
+        try:
+            reg = add_scoring_dance_event(conn, str(n), fetch=fetch, now=now)
+        except Exception as e:  # noqa: BLE001 - 404s and network errors count as "missing"
+            report["missing"] += 1
+            if "404" not in str(e):
+                report["errors"].append(f"{n}: {e}")
+            return False
+        finally:
+            if delay:
+                time.sleep(delay)
+        if reg["status"] == "registered":
+            report["registered"] += 1
+            report["events"].append({"number": n, "name": reg.get("name"), "event_id": reg.get("event_id"),
+                                     "rounds": reg.get("rounds")})
+            report["highest_found"] = max(report["highest_found"] or 0, n)
+        else:
+            report["no_results"] += 1
+        return True
+
+    for n in recheck:
+        visit(n)
+    n, misses = start, 0
+    while (end is None and misses < SD_MISS_LIMIT) or (end is not None and n <= end):
+        misses = 0 if visit(n) else misses + 1
+        n += 1
+    report["scanned_range"] = [start, n - 1]
     if index:
         report["indexing"] = index_provider_events(conn, provider=scoringdance.PROVIDER, fetch=fetch, now=now,
                                                    delay=delay)

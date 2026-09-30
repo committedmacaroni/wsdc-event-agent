@@ -172,3 +172,49 @@ class TestFinalsInDancerResults(unittest.TestCase):
         self.assertEqual((div["division"], div["role"]), ("Advanced", "follower"))
         self.assertEqual([r["round"] for r in div["rounds"]], ["prelims", "finals"])
         self.assertEqual((div["final_place"], div["rounds"][1]["partner"]), (1, "Fran Vidal"))
+
+
+class TestScoringDanceScan(unittest.TestCase):
+    """Event numbers 1-3 exist (2 has no results yet), 4-5 missing, 6 exists."""
+
+    def setUp(self):
+        self.conn = mem()
+        idx = read("sd_index_195.html")
+        self.pages = {}
+        for n in (1, 3, 6):
+            self.pages[f"https://scoring.dance/enUS/events/{n}/results/"] = idx.replace("/195/", f"/{n}/")
+            self.pages[f"https://scoring.dance/enUS/events/{n}/results/3073.html"] = read("sd_round_3073.html")
+            self.pages[f"https://scoring.dance/enUS/events/{n}/results/3074.html"] = read("sd_round_3074.html")
+        self.pages["https://scoring.dance/enUS/events/2/results/"] = "<html><h1>Future Event 2027 results</h1></html>"
+
+    def fetch(self, url):
+        if url not in self.pages:
+            raise RuntimeError(f"HTTP Error 404: Not Found ({url})")
+        return self.pages[url]
+
+    def test_backfill_walks_until_misses(self):
+        from wsdc_catalog import websites
+        old = websites.SD_MISS_LIMIT
+        websites.SD_MISS_LIMIT = 3
+        try:
+            rep = websites.scan_scoring_dance(self.conn, start=1, fetch=self.fetch, now=NOW, delay=0)
+        finally:
+            websites.SD_MISS_LIMIT = old
+        self.assertEqual((rep["registered"], rep["no_results"], rep["highest_found"]), (3, 1, 6))
+        self.assertEqual(rep["scanned_range"], [1, 9])
+        self.assertEqual(rep["errors"], [])  # 404s are expected, not errors
+        self.assertGreater(rep["indexing"]["sheets_indexed"], 0)
+
+    def test_date_falls_back_to_round_page(self):
+        idx = self.pages["https://scoring.dance/enUS/events/1/results/"]
+        self.pages["https://scoring.dance/enUS/events/1/results/"] = idx.replace("at 01/23/2025", "")
+        reg = add_scoring_dance_event(self.conn, "1", fetch=self.fetch, now=NOW)
+        ev = self.conn.execute("SELECT start_date FROM events WHERE id=?", (reg["event_id"],)).fetchone()
+        self.assertEqual(ev[0], "2025-01-23")
+
+    def test_results_reach_dancer_search(self):
+        from wsdc_catalog.websites import scan_scoring_dance
+        scan_scoring_dance(self.conn, start=1, end=1, fetch=self.fetch, now=NOW, delay=0)
+        out = dancer_results(self.conn, "Henry Leonard", include_registry=False)
+        self.assertEqual(out["total_events"], 1)
+        self.assertEqual(out["events"][0]["provider"], "scoring_dance")
