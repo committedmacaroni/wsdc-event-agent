@@ -36,7 +36,16 @@ def import_external_event(conn, payload: dict, now=None) -> dict:
     conn.execute("BEGIN IMMEDIATE")
     try:
         canonical, aliases = split_event_name(name)
-        series_id = resolve_or_create_series(conn, canonical, aliases, source, ts, warnings)
+        from .dedupe import find_related_event
+        from .sync import find_series
+        series_id = find_series(conn, canonical, aliases, warnings)
+        if series_id is None:
+            related = find_related_event(conn, name, start.isoformat(), "day", end.isoformat(), source=source)
+            if related is not None:
+                series_id = related["series_id"]
+        series_id = series_id or resolve_or_create_series(conn, canonical, aliases, source, ts, warnings)
+        for a in aliases:
+            add_alias(conn, series_id, a, source, ts)
         add_alias(conn, series_id, name, source, ts)  # provider's own name, never the canonical
         existing = match_occurrence(conn, series_id, start, country, set(), warnings,
                                     source=None, window_days=IMPORT_MATCH_DAYS)

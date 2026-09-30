@@ -88,7 +88,7 @@ def resolve_event(conn, event_id: str | None = None, metadata: dict | None = Non
     args = [f"%{t}%" for t in tokens for _ in range(3)]
     rows = conn.execute(
         f"SELECT e.*, s.normalized_name AS series_norm FROM events e "
-        f"JOIN event_series s ON s.id=e.series_id WHERE {like}", args).fetchall()
+        f"JOIN event_series s ON s.id=e.series_id WHERE e.merged_into IS NULL AND ({like})", args).fetchall()
     scored = sorted(((_score(conn, r, meta), r) for r in rows), key=lambda t: (-t[0], t[1]["start_date"] or ""))
     scored = [(s, r) for s, r in scored if s >= CANDIDATE_MIN][:MAX_CANDIDATES]
     candidates = [{"event_id": r["id"], "name": r["name"], "start_date": r["start_date"],

@@ -182,7 +182,13 @@ def _series_for_registry_event(conn, ev: dict, ts: str, warnings: list) -> str |
     if not name:
         return None
     canonical, aliases = split_event_name(name)
-    sid = find_series(conn, canonical, aliases, warnings) or create_series(conn, canonical, SOURCE, ts)
+    sid = find_series(conn, canonical, aliases, warnings)
+    if sid is None and ev.get("month"):
+        from .dedupe import find_related_event
+        related = find_related_event(conn, name, ev["month"] + "-01", "month", source=SOURCE)
+        if related is not None:
+            sid = related["series_id"]
+    sid = sid or create_series(conn, canonical, SOURCE, ts)
     for a in aliases:
         add_alias(conn, sid, a, SOURCE, ts)
     if ext_id:
@@ -201,7 +207,8 @@ def link_registry_event(conn, ev: dict, ts: str, warnings: list) -> tuple[str | 
     if not sid or not month:
         return None, "unmatched"
     rows = conn.execute(
-        "SELECT id FROM events WHERE series_id=? AND (substr(start_date,1,7)=? OR substr(end_date,1,7)=?) "
+        "SELECT id FROM events WHERE series_id=? AND merged_into IS NULL "
+        "AND (substr(start_date,1,7)=? OR substr(end_date,1,7)=?) "
         "ORDER BY CASE date_precision WHEN 'day' THEN 0 ELSE 1 END, created_at", (sid, month, month)).fetchall()
     if len(rows) > 1:
         warnings.append(f"{ev.get('name')} {month}: {len(rows)} catalog events in that month; linked the first")

@@ -245,6 +245,10 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
                 raise HttpError(400, "invalid_parameter", "names must be a list of exactly two judge names")
             return 200, add_override(conn, action, names[0], names[1])
 
+        def dedupe(self, conn, params):
+            from .dedupe import merge_duplicates
+            return 200, merge_duplicates(conn)
+
         def judges_rebuild(self, conn, params):
             from .judges import rebuild
             return 200, rebuild(conn)
@@ -281,6 +285,7 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
         ("GET", r"/judges", False, Handler.judges),
         ("POST", r"/admin/judges/(merge|separate)", True, Handler.judge_override),
         ("POST", r"/admin/judges/rebuild", True, Handler.judges_rebuild),
+        ("POST", r"/admin/events/dedupe", True, Handler.dedupe),
         ("POST", r"/admin/scoresheets/websites", True, Handler.scoresheet_websites),
         ("POST", r"/admin/scoresheets/scoring-dance", True, Handler.scoresheet_scoring_dance),
         ("POST", r"/admin/scoresheets/discover", True, Handler.scoresheet_discover),

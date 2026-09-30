@@ -10,6 +10,7 @@ Flow:
 from __future__ import annotations
 
 import hashlib
+import re
 import json
 import time
 from datetime import date, datetime, timedelta
@@ -196,10 +197,41 @@ def _callback_summary(details: list[dict]) -> dict:
             "no": sum(d["kind"] == "no" for d in scored), "judges_marking": len(scored)}
 
 
+_TYPE_PATTERNS = [("strictly", r"\bstrictly\b"), ("all_in", r"\ball[\s-]?in\b"),
+                  ("routine", r"\broutines?\b"), ("pro_am", r"\bpro[\s-]?am\b"),
+                  ("jack_and_jill", r"jack\s*(?:&|and)\s*jill|\bj\s*&\s*j\b|\bjnj\b")]
+_TYPE_LABELS = {"strictly": "Strictly Swing", "all_in": "All-In", "routine": "Routine", "pro_am": "Pro-Am",
+                "jack_and_jill": "Jack & Jill", "other": "Competition"}
+
+
+def competition_type(section: str | None) -> str:
+    for t, pat in _TYPE_PATTERNS:
+        if re.search(pat, section or "", re.I):
+            return t
+    return "jack_and_jill" if section is None else "other"
+
+
+def division_label(division: str | None, section: str | None) -> str:
+    """Always something readable: the division, else the section title minus round/role words."""
+    if division:
+        return division
+    s = section or ""
+    s = re.sub(r"\((?:leaders?|followers?)\)", "", s, flags=re.I)
+    s = re.sub(r"\b(prelims?|preliminar(?:y|ies)|quarter(?:final)?s?|semi(?:final)?s?|finals?|results?|"
+               r"leaders?|followers?|round)\b", "", s, flags=re.I)
+    s = re.sub(r"jack\s*(?:&|and)\s*jill|\bj\s*&\s*j\b", "", s, flags=re.I)
+    s = re.sub(r"[\s\-:|/]+", " ", s).strip()
+    return s or _TYPE_LABELS[competition_type(section)]
+
+
 def _group_divisions(rows) -> list[dict]:
     divs: dict = {}
     for r in rows:
-        d = divs.setdefault((r["division"], r["role"]), {"division": r["division"], "role": r["role"], "rounds": []})
+        ctype = competition_type(r["section"])
+        label = division_label(r["division"], r["section"])
+        d = divs.setdefault((label, ctype, r["role"]), {
+            "division": r["division"], "division_label": label, "competition_type": ctype,
+            "competition_type_label": _TYPE_LABELS[ctype], "role": r["role"], "rounds": []})
         d["rounds"].append({
             "round": r["round"], "section": r["section"], "bib": r["bib"], "partner": r["partner_name"],
             "rank": r["rank"], "place": r["place"], "marks": json.loads(r["marks"]) if r["marks"] else None,
@@ -404,7 +436,9 @@ def index_provider_events(conn, *, provider: str | None = None, index_url: str |
                  (iso(utcnow()), stats["events"], stats["entries"], stats["sheets_indexed"],
                   stats["sheets_already_indexed"], stats["sheets_skipped_pdf"], json.dumps(errors[:200]), run_id))
     if stats["sheets_indexed"]:
+        from .dedupe import merge_duplicates
         from .judges import rebuild
+        merge_duplicates(conn)
         rebuild(conn)
     return {"run_id": run_id, "status": "success", "provider": provider or "all", **stats, "errors": errors[:50]}
 

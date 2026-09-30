@@ -175,7 +175,7 @@ def match_occurrence(conn, series_id: str, start: date, country: str | None, cla
         sql += " AND source=?"
         args.append(source)
     cands = [r for r in conn.execute(sql + " ORDER BY created_at, id", args)
-             if r["id"] not in claimed and r["start_date"]
+             if r["id"] not in claimed and r["start_date"] and not r["merged_into"]
              and _countries_compatible(r["country"], country)]
     exact = [r for r in cands if r["start_date"] == start.isoformat()]
     if exact:

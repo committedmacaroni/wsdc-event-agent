@@ -68,6 +68,7 @@ def serialize_event(conn, r: sqlite3.Row, *, detail: bool = False) -> dict:
 
 def list_events(conn, params: dict) -> dict:
     where, args = [], []
+    where.append("e.merged_into IS NULL")
     if (v := params.get("year")) not in (None, ""):
         try:
             args.append(int(v))
@@ -113,8 +114,18 @@ def list_events(conn, params: dict) -> dict:
 
 
 def get_event(conn, event_id: str) -> dict | None:
+    """Merged duplicates resolve to the surviving event (ids stored by clients keep working)."""
     r = conn.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
-    return serialize_event(conn, r, detail=True) if r else None
+    hops = 0
+    while r is not None and r["merged_into"] and hops < 5:
+        r = conn.execute("SELECT * FROM events WHERE id=?", (r["merged_into"],)).fetchone()
+        hops += 1
+    if not r:
+        return None
+    out = serialize_event(conn, r, detail=True)
+    if r["id"] != event_id:
+        out["merged_from"] = event_id
+    return out
 
 
 def get_series(conn, series_id: str) -> dict | None:

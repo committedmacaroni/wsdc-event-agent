@@ -559,3 +559,74 @@ In `/dancers/results`, `judges[]` is grouped by resolved identity. Each judge ad
 - **Callback stats never read 0 when there's no data.** `summary.callback_data_available`
   is false and `callback_note` explains why. `avg_callback_pct` and `advancement_rate` are
   null in that case.
+
+## 19. Roles (v0.8.3)
+
+**Role values** are always lowercase `"leader"` or `"follower"`, everywhere: divisions,
+rounds, registry results, points, progress and roles. Display labels are provided
+separately.
+
+**`/dancers/results.roles`:**
+
+```
+{ source: "wsdc_registry" | "scoresheets" | null,
+  competed_roles: ["follower", "leader"],
+  primary:   { role, role_label, level_allowed, level_required, level_recommended,
+               highest_level, highest_level_points, wsdc_points, rule },
+  secondary: { ...same fields... } | null }
+```
+
+- **From the registry** (when the dancer's record is found):
+  - The primary role's levels come from `dominate_*`.
+  - The secondary role's allowed, required and recommended levels come from
+    `non_dominate_lookup`, and its `rule` is the WSDC message text (for example
+    "If competing in NOV for your primary role, we require NEW for your secondary role.").
+  - The registry's "N/A" becomes null.
+- **Without a registry record**, the primary role is the one with the most score-sheet rounds.
+
+**`summary.by_role`** gives the same summary fields for each role the dancer competed in:
+finals, callback stats and `wsdc_points` for that role.
+
+`/competitors/:id` also returns `secondary_level_required`, `secondary_level_allowed`,
+`secondary_level_recommended` and `secondary_rule`.
+
+## 20. One event per real-world event (v0.9)
+
+**Problem:** sources name events differently (registry: "Swingtacular: The Galactic Open";
+score sheets: "Swingtacular"), which produced two catalog events.
+
+**Rule** (`dedupe.py`): two events are the same when both of these hold:
+
+- **Related names.** After dropping generic words (the, WCS, swing, festival, open,
+  classic...), one name's words are all contained in the other's, checked against event
+  names, series names and aliases.
+- **Compatible dates.** Starts within 7 days, or the same month when either side only has a
+  month.
+
+Events from the same source are never merged.
+
+**Where it applies:**
+
+- New provider events and new registry results attach to an existing related event instead
+  of creating a series.
+- `merge_duplicates()` repairs existing data. It runs after any indexing that adds sheets,
+  and via `python -m wsdc_catalog dedupe` or `POST /admin/events/dedupe`.
+
+**Merging is non-destructive:**
+
+- The kept event prefers exact dates, then the WSDC calendar, then providers, then the
+  registry.
+- The duplicate keeps its id with `merged_into` set. `GET /events/<old id>` returns the
+  surviving event with `merged_from`, so ids Replit stored keep working.
+- Merged events are hidden from lists and search.
+- Sheets, provider links, external refs, website checks and aliases all move to the kept
+  event.
+
+**Also in this version:**
+
+- Each division carries `division_label`, which is never empty (the division, else the
+  section title minus round and role words, else the competition type). It also carries
+  `competition_type` (jack_and_jill | strictly | all_in | routine | pro_am | other) and
+  `competition_type_label`. Divisions are grouped by label, type and role.
+- Score sheets not linked to a catalog event are still returned with the provider's event
+  name and dates.

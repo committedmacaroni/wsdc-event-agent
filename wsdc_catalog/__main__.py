@@ -78,6 +78,7 @@ def main(argv=None) -> int:
         ja = jsub.add_parser(act)
         ja.add_argument("name_a")
         ja.add_argument("name_b")
+    sub.add_parser("dedupe", help="merge the same event recorded under different names by different sources")
     e = sub.add_parser("events")
     e.add_argument("params", nargs="*", help="filters as key=value, e.g. year=2026 country=USA")
     args = p.parse_args(argv)
@@ -179,6 +180,9 @@ def main(argv=None) -> int:
                 print(f"REVIEW  {r['name']!r} could be: {', '.join(r['candidates'])}")
         else:
             _print(add_override(conn, args.j_cmd, args.name_a, args.name_b))
+    elif args.cmd == "dedupe":
+        from .dedupe import merge_duplicates
+        _print(merge_duplicates(connect(cfg.db_path)))
     elif args.cmd == "events":
         _print(list_events(connect(cfg.db_path), dict(kv.split("=", 1) for kv in args.params)))
     return 0

@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS event_series (
@@ -240,6 +240,10 @@ MIGRATIONS = {
         name_b     TEXT NOT NULL,
         created_at TEXT NOT NULL
     );
+    """,
+    9: """
+    ALTER TABLE events ADD COLUMN merged_into TEXT;
+    CREATE INDEX IF NOT EXISTS idx_events_merged ON events(merged_into);
     """,
 }
 

@@ -15,13 +15,21 @@ from .registry import RegistryError, lookup_competitor, post_find, search_compet
 from .scoresheets import _group_divisions, index_status
 
 
-def _event_info(conn, event_id: str | None) -> dict:
-    if not event_id:
-        return {"event_id": None}
-    r = conn.execute("SELECT id, name, start_date, end_date, date_precision, city, region, country "
-                     "FROM events WHERE id=?", (event_id,)).fetchone()
+def _event_info(conn, event_id: str | None, provider: str | None = None, provider_key: str | None = None) -> dict:
+    r = None
+    if event_id:
+        r = conn.execute("SELECT id, name, start_date, end_date, date_precision, city, region, country, merged_into "
+                         "FROM events WHERE id=?", (event_id,)).fetchone()
+        if r is not None and r["merged_into"]:
+            return _event_info(conn, r["merged_into"])
     if not r:
-        return {"event_id": event_id}
+        # Sheets not linked to a catalog event: fall back to the provider's own event record.
+        pe = conn.execute("SELECT name, start_date, end_date FROM provider_events WHERE provider=? AND provider_key=?",
+                          (provider, provider_key)).fetchone() if provider and provider_key else None
+        return {"event_id": event_id, "event_name": pe["name"] if pe else provider_key,
+                "start_date": pe["start_date"] if pe else None, "end_date": pe["end_date"] if pe else None,
+                "date_precision": "day" if pe and pe["start_date"] else None,
+                "city": None, "region": None, "country": None}
     return {"event_id": r["id"], "event_name": r["name"], "start_date": r["start_date"],
             "end_date": r["end_date"], "date_precision": r["date_precision"], "city": r["city"],
             "region": r["region"], "country": r["country"]}
@@ -67,12 +75,13 @@ def dancer_results(conn, name: str, *, wsdc_id=None, year: int | None = None,
         (norm, known_id, known_id, known_id, known_id)).fetchall()
     by_event: dict = {}
     for r in rows:
-        key = r["event_id"] or f"{r['provider']}:{r['provider_event_key']}"
-        by_event.setdefault(key, {"event_id": r["event_id"], "provider": r["provider"], "rows": []})["rows"].append(r)
+        info = _event_info(conn, r["event_id"], r["provider"], r["provider_event_key"])
+        key = info.get("event_id") or f"{r['provider']}:{r['provider_event_key']}"
+        by_event.setdefault(key, {"info": info, "provider": r["provider"], "rows": []})["rows"].append(r)
 
     events = {}
     for key, ev in by_event.items():
-        events[key] = {**_event_info(conn, ev["event_id"]), "sources": ["scoresheets"],
+        events[key] = {**ev["info"], "sources": ["scoresheets"],
                        "provider": ev["provider"], "divisions": _group_divisions(ev["rows"]),
                        "registry_results": []}
 
