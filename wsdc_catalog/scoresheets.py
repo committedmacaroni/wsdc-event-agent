@@ -16,7 +16,7 @@ import time
 from datetime import date, datetime, timedelta
 
 from . import eepro
-from .providers import parser_for
+from .providers import parse_with_context, parser_for
 from .db import iso, utcnow
 from .enrichment import import_external_event
 from .fetcher import fetch_html
@@ -296,7 +296,7 @@ def lookup_for_events(conn, name: str, event_ids: list[str], *, fetch=fetch_html
         sheets, sheet_errors = [], []
         for pe in pes:
             for title, url in json.loads(pe["links"]):
-                if not url.lower().endswith((".html", ".htm")):
+                if url.lower().endswith(".pdf") or (pe["provider"] != "wdr" and not url.lower().endswith((".html", ".htm"))):
                     sheets.append({"title": title, "url": url, "status": "skipped_pdf"})
                     continue
                 if _sheet_is_fresh(conn, url, pe["end_date"] or ev["end_date"], now):
@@ -305,7 +305,8 @@ def lookup_for_events(conn, name: str, event_ids: list[str], *, fetch=fetch_html
                     continue
                 try:
                     html = fetch(url)
-                    parsed = parser_for(pe["provider"]).parse_sheet(html)
+                    parsed = parse_with_context(pe["provider"], html, title,
+                                                [t for t, _ in json.loads(pe["links"])])
                     store_sheet(conn, url, pe["provider"], pe["provider_key"], eid, parsed, html, ts)
                     sheets.append({"title": title, "url": url, "status": "fetched"})
                 except Exception as e:  # noqa: BLE001
@@ -412,8 +413,9 @@ def index_provider_events(conn, *, provider: str | None = None, index_url: str |
         except KeyError:
             errors.append(f"{pe['provider_key']}: no parser for provider {pe['provider']}")
             continue
-        for title, url in json.loads(pe["links"]):
-            if not url.lower().endswith((".html", ".htm")):
+        links = json.loads(pe["links"])
+        for title, url in links:
+            if url.lower().endswith(".pdf") or (pe["provider"] != "wdr" and not url.lower().endswith((".html", ".htm"))):
                 stats["sheets_skipped_pdf"] += 1
                 continue
             if _sheet_is_fresh(conn, url, pe["end_date"], now):
@@ -421,7 +423,7 @@ def index_provider_events(conn, *, provider: str | None = None, index_url: str |
                 continue
             try:
                 html = fetch(url)
-                parsed = parser.parse_sheet(html)
+                parsed = parse_with_context(pe["provider"], html, title, [t for t, _ in links])
                 stats["entries"] += store_sheet(conn, url, pe["provider"], pe["provider_key"], pe["event_id"],
                                                 parsed, html, iso(utcnow()))
                 stats["sheets_indexed"] += 1

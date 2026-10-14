@@ -22,13 +22,15 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
-from . import eepro, scoringdance
+from . import eepro, scoringdance, wdr
 from .db import iso, utcnow
 from .enrichment import import_external_event
 from .fetcher import fetch_html
 from .scoresheets import discover_eepro_year, index_provider_events
 
 RECHECK_AFTER = timedelta(days=7)
+RECENT_EVENT_DAYS = 21                 # events that ended this recently are rechecked daily:
+RECENT_RECHECK_AFTER = timedelta(hours=20)  # results usually go up in the days after an event
 MAX_RESULT_PAGES = 3
 _RESULTS_WORDS = re.compile(r"\b(results?|scores?|scoring|score ?sheets?|standings|placements)\b", re.I)
 _EEPRO_RE = re.compile(r"eepro\.com/results/([^/?#]+)/", re.I)
@@ -49,7 +51,7 @@ def _links(html: str, base: str) -> list[tuple[str, str]]:
 
 def scan_website(url: str, *, fetch=fetch_html, delay: float = 0.5) -> dict:
     """-> {"eepro": {slug}, "scoring_dance": {number}, "other": [(text, url)], "pages": [...]}"""
-    found = {"eepro": set(), "scoring_dance": set(), "other": [], "pages": [url]}
+    found = {"eepro": set(), "scoring_dance": set(), "wdr": set(), "other": [], "pages": [url]}
     home = fetch(url)
     links = _links(home, url)
     host = urlparse(url).netloc.lower().removeprefix("www.")
@@ -73,6 +75,8 @@ def scan_website(url: str, *, fetch=fetch_html, delay: float = 0.5) -> dict:
             found["eepro"].add(m.group(1))
         elif (n := scoringdance.event_number(href)):
             found["scoring_dance"].add(n)
+        elif (w := wdr.event_id_from(href)):
+            found["wdr"].add(w)
         elif (_OTHER_RESULT_RE.search(text) or href.lower().endswith(".pdf") and _OTHER_RESULT_RE.search(href)) \
                 and href not in seen_other and urlparse(href).netloc:
             seen_other.add(href)
@@ -93,6 +97,7 @@ def add_scoring_dance_event(conn, number: str, *, fetch=fetch_html, now=None, ca
     info = scoringdance.parse_results_index(fetch(scoringdance.results_index_url(number)), number)
     if not info["links"]:
         return {"number": number, "status": "no_results", "event_id": None}
+    number = info["number"] or number  # a named link ("bbtb2024") resolves to the event's number
     if info["date"] is None or not info["name"]:
         # The round pages reliably state "... during <Event> ... at MM/DD/YYYY": use the first one.
         try:
@@ -119,6 +124,40 @@ def add_scoring_dance_event(conn, number: str, *, fetch=fetch_html, now=None, ca
          json.dumps(info["links"]), ts))
     return {"number": number, "status": "registered", "event_id": event_id, "name": info["name"],
             "rounds": len(info["links"])}
+
+
+def add_wdr_event(conn, ref: str, *, fetch=fetch_html, now=None, catalog_event=None) -> dict:
+    """Register a World Dance Registry event from its scores URL (or UUID)."""
+    now = now or utcnow()
+    eid = wdr.event_id_from(ref)
+    if not eid:
+        raise ValueError(f"not a scores.worlddanceregistry.com event link: {ref!r}")
+    info = wdr.parse_rounds_index(fetch(wdr.rounds_url(eid)), eid)
+    if not info["links"]:
+        return {"event": eid, "status": "no_results", "event_id": None, "name": info["name"]}
+    event_id = None
+    year = info["year"]
+    if catalog_event is not None and catalog_event["start_date"] and year and \
+            catalog_event["start_date"][:4] == str(year):
+        event_id = catalog_event["id"]
+    elif year and info["name"]:
+        linked = import_external_event(conn, {
+            "source": wdr.PROVIDER, "name": info["name"], "start_date": f"{year}-01-01",
+            "date_precision": "year", "external_id": eid, "url": wdr.rounds_url(eid)}, now=now)
+        event_id = linked["event_id"]
+    ev = conn.execute("SELECT start_date, end_date, date_precision FROM events WHERE id=?",
+                      (event_id,)).fetchone() if event_id else None
+    exact = ev and ev["date_precision"] == "day"
+    conn.execute(
+        "INSERT INTO provider_events (provider, provider_key, event_id, name, start_date, end_date, index_url, "
+        "links, fetched_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(provider, provider_key) DO UPDATE SET "
+        "event_id=COALESCE(excluded.event_id, provider_events.event_id), name=excluded.name, "
+        "start_date=excluded.start_date, end_date=excluded.end_date, links=excluded.links, "
+        "fetched_at=excluded.fetched_at",
+        (wdr.PROVIDER, eid, event_id, info["name"], ev["start_date"] if exact else None,
+         ev["end_date"] if exact else None, wdr.rounds_url(eid), json.dumps(info["links"]), iso(now)))
+    return {"event": eid, "status": "registered", "event_id": event_id, "name": info["name"],
+            "year": year, "rounds": len(info["links"])}
 
 
 def _attach_eepro(conn, slug: str, ev, *, fetch, now) -> dict:
@@ -154,11 +193,15 @@ def discover_from_websites(conn, *, fetch=fetch_html, now: datetime | None = Non
                               event_ids).fetchall()
     else:
         cutoff = iso(now - RECHECK_AFTER)
+        recent_cutoff = iso(now - RECENT_RECHECK_AFTER)
+        recent_end = (now.date() - timedelta(days=RECENT_EVENT_DAYS)).isoformat()
         events = conn.execute(
             "SELECT e.* FROM events e LEFT JOIN website_checks w ON w.event_id = e.id "
             "WHERE e.website_url IS NOT NULL AND e.website_url != '' AND e.start_date <= ? "
-            "AND (w.checked_at IS NULL OR w.checked_at < ?) ORDER BY e.start_date DESC LIMIT ?",
-            (today, cutoff, limit)).fetchall()
+            "AND e.merged_into IS NULL AND (w.checked_at IS NULL OR w.checked_at < "
+            "CASE WHEN COALESCE(e.end_date, e.start_date) >= ? THEN ? ELSE ? END) "
+            "ORDER BY e.start_date DESC LIMIT ?",
+            (today, recent_end, recent_cutoff, cutoff, limit)).fetchall()
     events = [e for e in events if not re.search(r"(eepro\.com|scoring\.dance)", e["website_url"] or "", re.I)]
     report = {"events_checked": 0, "provider_events_found": 0, "other_results_links": 0,
               "errors": [], "events": []}
@@ -169,6 +212,9 @@ def discover_from_websites(conn, *, fetch=fetch_html, now: datetime | None = Non
             found = scan_website(ev["website_url"], fetch=fetch, delay=delay)
             for slug in sorted(found["eepro"]):
                 entry["found"].append({"provider": "eepro", **_attach_eepro(conn, slug, ev, fetch=fetch, now=now)})
+            for wid in sorted(found["wdr"]):
+                entry["found"].append({"provider": "wdr", **add_wdr_event(conn, wid, fetch=fetch, now=now,
+                                                                           catalog_event=ev)})
             for number in sorted(found["scoring_dance"]):
                 entry["found"].append({"provider": "scoring_dance",
                                        **add_scoring_dance_event(conn, number, fetch=fetch, now=now,
@@ -195,12 +241,16 @@ def discover_from_websites(conn, *, fetch=fetch_html, now: datetime | None = Non
     if index:
         report["indexing"] = index_provider_events(conn, provider=scoringdance.PROVIDER, fetch=fetch, now=now,
                                                    delay=delay)
+        report["indexing_wdr"] = index_provider_events(conn, provider=wdr.PROVIDER, fetch=fetch, now=now,
+                                                       delay=delay)
     return report
 
 
 # ------------------------------------------------------------------ scoring.dance bulk discovery
 SD_MISS_LIMIT = 40          # stop an open-ended scan after this many consecutive missing event numbers
 SD_RECENT_DAYS = 30         # re-read round lists for events this recent (new rounds get posted)
+SD_PENDING_DAYS = 400       # keep rechecking an event number that had no results for this long
+SD_RECHECK_HOURS = 20       # at most one recheck per pending number per day
 
 
 def scan_scoring_dance(conn, *, start: int | None = None, end: int | None = None, fetch=fetch_html,
@@ -217,10 +267,18 @@ def scan_scoring_dance(conn, *, start: int | None = None, end: int | None = None
         "SELECT provider_key, start_date, fetched_at FROM provider_events WHERE provider=?",
         (scoringdance.PROVIDER,)) if str(r["provider_key"]).isdigit()}
     recent_cut = (now.date() - timedelta(days=SD_RECENT_DAYS)).isoformat()
+    pending_cut = iso(now - timedelta(days=SD_PENDING_DAYS))
+    recheck_cut = iso(now - timedelta(hours=SD_RECHECK_HOURS))
     if start is None:
         top = max(known) if known else 0
         start = max(1, top - 30)
         recheck = sorted(n for n, r in known.items() if (r["start_date"] or "") >= recent_cut and n < start)
+        # Event numbers that existed but had no results yet: check again until results appear.
+        recheck += sorted(int(r["provider_key"]) for r in conn.execute(
+            "SELECT provider_key FROM provider_scan_state WHERE provider=? AND status='no_results' "
+            "AND first_seen_at >= ? AND last_checked_at < ?", (scoringdance.PROVIDER, pending_cut, recheck_cut))
+            if str(r["provider_key"]).isdigit() and int(r["provider_key"]) < start)
+        recheck = sorted(set(recheck))
     else:
         recheck = []
     report = {"checked": 0, "registered": 0, "no_results": 0, "missing": 0, "skipped_known": 0,
@@ -243,6 +301,11 @@ def scan_scoring_dance(conn, *, start: int | None = None, end: int | None = None
         finally:
             if delay:
                 time.sleep(delay)
+        conn.execute(
+            "INSERT INTO provider_scan_state (provider, provider_key, status, first_seen_at, last_checked_at) "
+            "VALUES (?,?,?,?,?) ON CONFLICT(provider, provider_key) DO UPDATE SET status=excluded.status, "
+            "last_checked_at=excluded.last_checked_at",
+            (scoringdance.PROVIDER, str(n), reg["status"], iso(now), iso(now)))
         if reg["status"] == "registered":
             report["registered"] += 1
             report["events"].append({"number": n, "name": reg.get("name"), "event_id": reg.get("event_id"),

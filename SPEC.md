@@ -656,3 +656,64 @@ instead.
   page.
 
 The daily scheduler runs the incremental scan.
+
+## 22. World Dance Registry provider (v0.11)
+
+WDR's "Pro Score" results are published at `scores.worlddanceregistry.com` (observed
+2026-10-06, The Chicago Classic 2026).
+
+**URLs:**
+
+- Event round list: `/<event uuid>/rounds`. The page title is "<Event Year> - Scores", with
+  one row per round linking to `/<event uuid>/rounds/<round uuid>`.
+
+**Prelim pages:**
+
+- One table per role. Columns: Callback | # | Bib # | Leaders or Followers | judges (first
+  names) | Scores Sum.
+- Callback values: Y = advanced, A1/A2 = alternate, S<n> = not called back.
+- Marks are points (10 / 4.5 / 4.3 / 4.2 / 0) and are mapped to Y / A1 / A2 / A3 / N.
+- Withdrawn competitors, shown as "***", are skipped.
+
+**Final pages:**
+
+- Columns: Bib # | Leader | Follower | Final | judges | `1--k` relative-placement tallies
+  (ignored).
+- Each couple becomes a leader entry and a follower entry. The bib goes on the leader.
+
+**Round naming:**
+
+- WDR numbers its prelim rounds. Within a division, the last prelim round becomes "semis" and
+  the one before it "quarters" (when there are 3 or more).
+- A style prefix like "Country Swing" stays part of the division name.
+- A "Leaders"/"Followers" segment in the round name sets the role.
+
+**Discovery:**
+
+- There is no public event list (event ids are random UUIDs).
+- Events are found from links on event websites (the website scan), or added by link:
+  `scoresheets wdr --event <link>`, or `POST /admin/scoresheets/wdr {"events": [...]}`.
+
+**Dates:**
+
+- Pages show the year only. A WDR event attaches to a catalog event of the same series in the
+  same year. Otherwise it's created with `date_precision = "year"` (start_date YYYY-01-01).
+- Dedupe treats year-only dates as compatible within the same year, and keeps the more
+  precise date when merging: day, then month, then year.
+
+## 23. Late-posted results fix (v0.11.1)
+
+Regression: Boogie By The Bay 2026 (scoring.dance) never reached the app.
+
+- **Pending event numbers are remembered.** scoring.dance creates event numbers months ahead.
+  Every number checked is now recorded in `provider_scan_state` (migration 10). Numbers that
+  existed without results are rechecked by the daily scan at most once per day, for up to
+  400 days, until results appear. Previously they were forgotten once they fell out of the
+  "last 30 numbers" window.
+- **Event websites are rechecked daily right after the event.** For events that ended within
+  the last 21 days, the website scan rechecks every 20 hours (previously weekly), because
+  results links are usually posted a few days after the event. Other events stay weekly.
+  Merged duplicate events are no longer scanned.
+- **Named scoring.dance links are recognized.** For example
+  `scoring.dance/events/bbtb2024/results`. The event's number is taken from the round links
+  on the page and used as the provider key.

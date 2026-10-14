@@ -27,7 +27,7 @@ from .eepro import describe_title
 PROVIDER = "scoring_dance"
 PARSER_VERSION = 3  # 2: real prelim markup; 3: finals (couples, Placement column)
 BASE = "https://scoring.dance"
-_EVENT_RE = re.compile(r"scoring\.dance/(?:[a-z]{2}[A-Z]{2}/)?events/(\d+)", re.I)
+_EVENT_RE = re.compile(r"scoring\.dance/(?:[a-z]{2}[A-Z]{2}/)?events/([A-Za-z0-9_-]+)", re.I)
 _ROUND_RE = re.compile(r"/events/(\d+)/results/(\d+)\.html", re.I)
 _DATE_RE = re.compile(r"\bat (\d{1,2})/(\d{1,2})/(\d{4})")
 _MARKS = {"yes": "Y", "no": "N", "alt1": "A1", "alt2": "A2", "alt3": "A3", "alt": "A"}
@@ -35,6 +35,7 @@ _INITIALS = re.compile(r"^[A-ZÀ-Ý][A-Za-zÀ-ÿ]{0,4}$")
 
 
 def event_number(url: str) -> str | None:
+    """Event number, or the event's name in the address (e.g. "bbtb2024"), from any scoring.dance link."""
     m = _EVENT_RE.search(url or "")
     return m.group(1) if m else None
 
@@ -48,20 +49,35 @@ def to_en(url: str) -> str:
 
 
 def parse_results_index(html: str, number: str) -> dict:
-    """-> {"name", "date", "links": [(title, url)]} for one event's results index page."""
+    """-> {"name", "date", "number", "links": [(title, url)]} for one event's results index page.
+
+    `number` may be the event's name in the address ("bbtb2024"); the page's round links carry the
+    real event number, which is returned as "number".
+    """
     soup = BeautifulSoup(html or "", "lxml")
-    links, seen = [], set()
+    found = []
     for a in soup.find_all("a", href=True):
         url = to_en(urljoin(results_index_url(number), a["href"]))
         m = _ROUND_RE.search(urlparse(url).path)
-        if m and m.group(1) == str(number) and url not in seen:
+        if m:
+            found.append((m.group(1), a.get_text(" ", strip=True), url))
+    if str(number).isdigit():
+        real = str(number)
+    else:
+        counts = {}
+        for n, _, _ in found:
+            counts[n] = counts.get(n, 0) + 1
+        real = max(counts, key=counts.get) if counts else None
+    links, seen = [], set()
+    for n, title, url in found:
+        if n == real and url not in seen:
             seen.add(url)
-            links.append((a.get_text(" ", strip=True), url))
+            links.append((title, url))
     h1 = soup.find("h1")
     name = re.sub(r"\s+results?\s*$", "", h1.get_text(" ", strip=True), flags=re.I) if h1 else None
     dm = _DATE_RE.search(soup.get_text(" "))
     when = date(int(dm.group(3)), int(dm.group(1)), int(dm.group(2))) if dm else None
-    return {"name": name, "date": when, "links": links}
+    return {"name": name, "date": when, "number": real, "links": links}
 
 
 def parse_round_meta(html: str) -> dict:

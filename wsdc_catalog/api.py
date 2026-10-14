@@ -261,6 +261,21 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
             rep["events"] = rep["events"][-50:]
             return 200, rep
 
+        def scoresheet_wdr(self, conn, params):
+            from .scoresheets import index_provider_events
+            from .websites import add_wdr_event
+            body = self._body()
+            refs = body.get("events") or []
+            if not refs:
+                raise HttpError(400, "invalid_parameter", "events must list WDR scores links or ids")
+            kw = {"fetch": sheet_fetch} if sheet_fetch else {}
+            try:
+                regs = [add_wdr_event(conn, r, **kw) for r in refs]
+            except ValueError as e:
+                raise HttpError(400, "invalid_parameter", str(e)) from None
+            idx = index_provider_events(conn, provider="wdr", **({**kw, "delay": 0} if sheet_fetch else {}))
+            return 200, {"registered": regs, "indexing": idx}
+
         def scoresheet_discover(self, conn, params):
             body = self._body()
             try:
@@ -297,6 +312,7 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
         ("POST", r"/admin/scoresheets/websites", True, Handler.scoresheet_websites),
         ("POST", r"/admin/scoresheets/scoring-dance", True, Handler.scoresheet_scoring_dance),
         ("POST", r"/admin/scoresheets/scoring-dance/scan", True, Handler.scoresheet_scoring_dance_scan),
+        ("POST", r"/admin/scoresheets/wdr", True, Handler.scoresheet_wdr),
         ("POST", r"/admin/scoresheets/discover", True, Handler.scoresheet_discover),
         ("POST", r"/admin/sync-events", True, Handler.sync),
         ("GET", r"/admin/sync-runs", True, Handler.sync_runs),

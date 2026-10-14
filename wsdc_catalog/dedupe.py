@@ -21,7 +21,8 @@ from .normalize import normalize_event_name, normalize_text
 GENERIC = {"the", "a", "an", "of", "and", "wcs", "west", "coast", "swing", "westie", "dance", "dancing",
            "festival", "fest", "championships", "championship", "open", "classic", "convention", "event",
            "weekend", "jam", "invitational", "international", "national", "presents"}
-SOURCE_RANK = {"wsdc_calendar": 0, "eepro": 1, "scoring_dance": 1, "manual": 2, "wsdc_registry": 3}
+SOURCE_RANK = {"wsdc_calendar": 0, "eepro": 1, "scoring_dance": 1, "wdr": 1, "manual": 2, "wsdc_registry": 3}
+PRECISION_RANK = {"day": 0, "month": 1, "year": 2}
 DAY_WINDOW = 7
 
 
@@ -51,6 +52,8 @@ def _event_names(conn, ev) -> list[str]:
 def _dates_compatible(a_start, a_prec, b_start, b_prec, a_end=None, b_end=None) -> bool:
     if not a_start or not b_start:
         return False
+    if a_prec == "year" or b_prec == "year":
+        return a_start[:4] == b_start[:4]
     if a_prec == "month" or b_prec == "month":
         months_a = {a_start[:7], (a_end or a_start)[:7]}
         months_b = {b_start[:7], (b_end or b_start)[:7]}
@@ -70,7 +73,7 @@ def find_related_event(conn, name: str, start: str, precision: str = "day", end:
             continue
         if not any(names_related(name, n) for n in _event_names(conn, ev)):
             continue
-        rank = (0 if ev["date_precision"] == "day" else 1, SOURCE_RANK.get(ev["source"], 2), ev["created_at"])
+        rank = (PRECISION_RANK.get(ev["date_precision"], 2), SOURCE_RANK.get(ev["source"], 2), ev["created_at"])
         if best is None or rank < best[0]:
             best = (rank, ev)
     return best[1] if best else None
@@ -100,9 +103,9 @@ def merge_events(conn, keep_id: str, drop_id: str) -> None:
         if not others:
             conn.execute("UPDATE OR IGNORE series_external_refs SET series_id=? WHERE series_id=?",
                          (keep["series_id"], drop["series_id"]))
-    if keep["date_precision"] == "month" and drop["date_precision"] == "day":
-        conn.execute("UPDATE events SET start_date=?, end_date=?, year=?, date_precision='day' WHERE id=?",
-                     (drop["start_date"], drop["end_date"], drop["year"], keep_id))
+    if PRECISION_RANK.get(drop["date_precision"], 2) < PRECISION_RANK.get(keep["date_precision"], 2):
+        conn.execute("UPDATE events SET start_date=?, end_date=?, year=?, date_precision=? WHERE id=?",
+                     (drop["start_date"], drop["end_date"], drop["year"], drop["date_precision"], keep_id))
     for col in ("website_url", "city", "region", "country"):
         if not keep[col] and drop[col]:
             conn.execute(f"UPDATE events SET {col}=? WHERE id=?", (drop[col], keep_id))
@@ -111,7 +114,7 @@ def merge_events(conn, keep_id: str, drop_id: str) -> None:
 
 
 def _rank(ev):
-    return (0 if ev["date_precision"] == "day" else 1, SOURCE_RANK.get(ev["source"], 2), ev["created_at"], ev["id"])
+    return (PRECISION_RANK.get(ev["date_precision"], 2), SOURCE_RANK.get(ev["source"], 2), ev["created_at"], ev["id"])
 
 
 def merge_duplicates(conn) -> dict:

@@ -38,24 +38,31 @@ def import_external_event(conn, payload: dict, now=None) -> dict:
         canonical, aliases = split_event_name(name)
         from .dedupe import find_related_event
         from .sync import find_series
+        precision = payload.get("date_precision") or "day"
         series_id = find_series(conn, canonical, aliases, warnings)
         if series_id is None:
-            related = find_related_event(conn, name, start.isoformat(), "day", end.isoformat(), source=source)
+            related = find_related_event(conn, name, start.isoformat(), precision, end.isoformat(), source=source)
             if related is not None:
                 series_id = related["series_id"]
         series_id = series_id or resolve_or_create_series(conn, canonical, aliases, source, ts, warnings)
         for a in aliases:
             add_alias(conn, series_id, a, source, ts)
         add_alias(conn, series_id, name, source, ts)  # provider's own name, never the canonical
-        existing = match_occurrence(conn, series_id, start, country, set(), warnings,
-                                    source=None, window_days=IMPORT_MATCH_DAYS)
-        if existing is None:  # a month-precision record (e.g. from the WSDC registry) in the same month
+        if precision == "year":
+            existing = conn.execute(
+                "SELECT * FROM events WHERE series_id=? AND merged_into IS NULL AND substr(start_date,1,4)=? "
+                "ORDER BY CASE date_precision WHEN 'day' THEN 0 WHEN 'month' THEN 1 ELSE 2 END, created_at LIMIT 1",
+                (series_id, start.isoformat()[:4])).fetchone()
+        else:
+            existing = match_occurrence(conn, series_id, start, country, set(), warnings,
+                                        source=None, window_days=IMPORT_MATCH_DAYS)
+        if existing is None and precision != "year":  # a month-precision record (e.g. from the WSDC registry) in the same month
             existing = conn.execute(
                 "SELECT * FROM events WHERE series_id=? AND date_precision='month' AND substr(start_date,1,7)=? "
                 "ORDER BY created_at LIMIT 1", (series_id, start.isoformat()[:7])).fetchone()
         if existing:
             event_id, status = existing["id"], "matched"
-            if existing["date_precision"] == "month":
+            if existing["date_precision"] == "month" and precision == "day":
                 conn.execute("UPDATE events SET start_date=?, end_date=?, year=?, date_precision='day', updated_at=? "
                              "WHERE id=?", (start.isoformat(), end.isoformat(), start.year, ts, event_id))
         else:
@@ -64,12 +71,12 @@ def import_external_event(conn, payload: dict, now=None) -> dict:
                 "INSERT INTO events (id, series_id, name, normalized_name, start_date, end_date, year, "
                 "city, region, country, location_raw, event_status, confirmation_status, hiatus, active, "
                 "lifecycle_status, source, website_url, raw_payload, first_seen_at, last_seen_at, "
-                "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?, 'unknown','unknown',0,0, "
-                "'historical',?,?,?,?,?,?,?)",
+                "created_at, updated_at, date_precision) VALUES (?,?,?,?,?,?,?,?,?,?,?, 'unknown','unknown',0,0, "
+                "'historical',?,?,?,?,?,?,?,?)",
                 (event_id, series_id, name, normalize_event_name(name), start.isoformat(), end.isoformat(),
                  start.year, payload.get("city"), payload.get("region"), country,
                  payload.get("location_raw"), source, payload.get("website_url"),
-                 json.dumps(payload, sort_keys=True), ts, ts, ts, ts))
+                 json.dumps(payload, sort_keys=True), ts, ts, ts, ts, precision))
         if payload.get("external_id") or payload.get("url"):
             conn.execute(
                 "INSERT OR IGNORE INTO event_external_refs (event_id, source, external_id, url, created_at) "

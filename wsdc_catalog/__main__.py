@@ -57,6 +57,9 @@ def main(argv=None) -> int:
     ss2 = ssub.add_parser("scoring-dance-scan", help="find every scoring.dance event by walking event numbers")
     ss2.add_argument("--from", dest="start", type=int, help="first event number (1 for a full backfill)")
     ss2.add_argument("--to", dest="end", type=int, help="last event number (default: stop after 40 missing)")
+    sw2 = ssub.add_parser("wdr", help="add World Dance Registry events by their scores link and index them")
+    sw2.add_argument("--event", action="append", required=True,
+                     help="scores.worlddanceregistry.com/<id>/rounds link, or the id (repeatable)")
     sc = ssub.add_parser("capture", help="save a results page's HTML to data/captures/ and show how it parses")
     sc.add_argument("url")
     sl = ssub.add_parser("lookup", help="fetch sheets for selected events and find a dancer")
@@ -138,6 +141,12 @@ def main(argv=None) -> int:
         elif args.ss_cmd == "websites":
             from .websites import discover_from_websites
             _print(discover_from_websites(conn, limit=args.limit, event_ids=args.event))
+        elif args.ss_cmd == "wdr":
+            from .scoresheets import index_provider_events
+            from .websites import add_wdr_event
+            for ref in args.event:
+                _print(add_wdr_event(conn, ref))
+            _print(index_provider_events(conn, provider="wdr"))
         elif args.ss_cmd == "scoring-dance-scan":
             from .websites import scan_scoring_dance
             rep = scan_scoring_dance(conn, start=args.start, end=args.end)
@@ -162,8 +171,11 @@ def main(argv=None) -> int:
                 name = re.sub(r"[^A-Za-z0-9]+", "_", urlparse(url).netloc + urlparse(url).path).strip("_")[:120]
                 (d / f"{name}.html").write_text(html, encoding="utf-8")
                 print(f"saved {d / (name + '.html')} ({len(html)} bytes)")
-            parser = scoringdance if "scoring.dance" in url else eepro
-            r = parser.parse_sheet(html)
+            from . import wdr
+            if "worlddanceregistry.com" in url:
+                r = wdr.parse_sheet(html)
+            else:
+                r = (scoringdance if "scoring.dance" in url else eepro).parse_sheet(html)
             print(f"event: {r['event_title']}  sections: {len(r['sections'])}  errors: {len(r['errors'])}")
             for sec in r["sections"]:
                 e0 = sec["entries"][0]

@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS event_series (
@@ -244,6 +244,18 @@ MIGRATIONS = {
     9: """
     ALTER TABLE events ADD COLUMN merged_into TEXT;
     CREATE INDEX IF NOT EXISTS idx_events_merged ON events(merged_into);
+    """,
+    10: """
+    -- Provider event numbers that exist but had no results when checked (scoring.dance creates
+    -- events months ahead). Rechecked daily so results are picked up once posted.
+    CREATE TABLE IF NOT EXISTS provider_scan_state (
+        provider        TEXT NOT NULL,
+        provider_key    TEXT NOT NULL,
+        status          TEXT NOT NULL,
+        first_seen_at   TEXT NOT NULL,
+        last_checked_at TEXT NOT NULL,
+        PRIMARY KEY (provider, provider_key)
+    );
     """,
 }
 
