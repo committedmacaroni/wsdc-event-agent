@@ -111,9 +111,23 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
 
         # ---------------------------------------------------------- routes
         def health(self, conn, params):
+            from . import __version__
+            from .jobs import last_daily
             last = conn.execute("SELECT id, status, completed_at FROM sync_runs WHERE status='success' "
                                 "ORDER BY id DESC LIMIT 1").fetchone()
-            return 200, {"ok": True, "time": iso(utcnow()), "last_successful_sync": dict(last) if last else None}
+            return 200, {"ok": True, "version": __version__, "time": iso(utcnow()),
+                         "last_successful_sync": dict(last) if last else None,
+                         "last_daily_import": last_daily(conn)}
+
+        def daily_job(self, conn, params):
+            from .jobs import JobAlreadyRunning, run_daily
+            kw = {"fetch": sheet_fetch, "delay": 0} if sheet_fetch else {}
+            try:
+                out = run_daily(conn, calendar_fetch=fetcher, snapshot_dir=cfg.snapshot_dir,
+                                calendar_url=cfg.wsdc_url, **kw)
+            except JobAlreadyRunning as e:
+                raise HttpError(409, "import_in_progress", str(e)) from None
+            return 200, out
 
         def events(self, conn, params):
             return 200, list_events(conn, params)
@@ -314,6 +328,7 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
         ("POST", r"/admin/scoresheets/scoring-dance/scan", True, Handler.scoresheet_scoring_dance_scan),
         ("POST", r"/admin/scoresheets/wdr", True, Handler.scoresheet_wdr),
         ("POST", r"/admin/scoresheets/discover", True, Handler.scoresheet_discover),
+        ("POST", r"/admin/jobs/daily", True, Handler.daily_job),
         ("POST", r"/admin/sync-events", True, Handler.sync),
         ("GET", r"/admin/sync-runs", True, Handler.sync_runs),
         ("POST", r"/admin/series/([A-Za-z0-9_]+)/aliases", True, Handler.alias),

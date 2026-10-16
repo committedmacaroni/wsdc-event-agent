@@ -1,38 +1,27 @@
-"""Daily sync scheduler.
+"""In-process daily import (backup only).
 
-Polls every 15 minutes and syncs when the last successful run is older than the
-interval, so process restarts or host sleep/wake neither double-sync nor skip a day.
-If the host suspends idle processes entirely, use an external cron hitting
-POST /admin/sync-events instead.
+Sprites pause when idle, so this timer can't be relied on. The daily import is triggered by
+the GitHub Actions schedule (.github/workflows/daily-import.yml) calling POST /admin/jobs/daily;
+this thread only covers the case where the service happens to be awake and the import is overdue.
 """
 from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from .config import Config
 from .db import connect, utcnow
 from .fetcher import fetch_wsdc
-from .scoresheets import index_eepro_year
-from .sync import SyncAlreadyRunning, run_wsdc_sync
+from .jobs import JobAlreadyRunning, daily_due, run_daily
 
 log = logging.getLogger("wsdc_catalog.scheduler")
 POLL_SECONDS = 15 * 60
 
 
-def sync_due(conn, interval: timedelta, now: datetime) -> bool:
-    r = conn.execute("SELECT started_at FROM sync_runs WHERE source='wsdc_calendar' AND status='success' "
-                     "ORDER BY id DESC LIMIT 1").fetchone()
-    if not r:
-        return True
-    last = datetime.fromisoformat(r["started_at"].replace("Z", "+00:00"))
-    return now - last >= interval
-
-
 class DailySyncScheduler(threading.Thread):
     def __init__(self, cfg: Config, fetcher=None):
-        super().__init__(daemon=True, name="wsdc-sync-scheduler")
+        super().__init__(daemon=True, name="wsdc-daily-import")
         self.cfg = cfg
         self.fetcher = fetcher or (lambda: fetch_wsdc(cfg.wsdc_url))
         self.interval = timedelta(hours=cfg.sync_interval_hours)
@@ -45,25 +34,14 @@ class DailySyncScheduler(threading.Thread):
         while not self._stop.is_set():
             conn = connect(self.cfg.db_path)
             try:
-                if sync_due(conn, self.interval, utcnow()):
-                    run = run_wsdc_sync(conn, self.fetcher, snapshot_dir=self.cfg.snapshot_dir,
-                                        source_url=self.cfg.wsdc_url)
-                    log.info("scheduled sync %s: %s found=%s added=%s updated=%s deactivated=%s",
-                             run["id"], run["status"], run["records_found"], run["records_added"],
-                             run["records_updated"], run["records_deactivated"])
-                    idx = index_eepro_year(conn, utcnow().year)
-                    log.info("eepro indexing: %s, %s events, %s new sheets", idx["status"], idx["events"],
-                             idx["sheets_indexed"])
-                    from .websites import discover_from_websites, scan_scoring_dance
-                    sd = scan_scoring_dance(conn)
-                    log.info("scoring.dance scan: %s new events, range %s", sd["registered"], sd["scanned_range"])
-                    web = discover_from_websites(conn, limit=25)
-                    log.info("website scan: %s events checked, %s provider events found",
-                             web["events_checked"], web["provider_events_found"])
-            except SyncAlreadyRunning:
-                log.info("scheduled sync skipped: another run in progress")
+                if daily_due(conn, self.interval, utcnow()):
+                    out = run_daily(conn, calendar_fetch=self.fetcher, snapshot_dir=self.cfg.snapshot_dir,
+                                    calendar_url=self.cfg.wsdc_url)
+                    log.info("daily import %s: %s in %ss", out["run_id"], out["status"], out["duration_s"])
+            except JobAlreadyRunning:
+                log.info("daily import skipped: another run in progress")
             except Exception:  # noqa: BLE001
-                log.exception("scheduled sync crashed")
+                log.exception("daily import crashed")
             finally:
                 conn.close()
             self._stop.wait(POLL_SECONDS)

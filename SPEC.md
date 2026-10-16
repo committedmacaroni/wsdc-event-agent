@@ -717,3 +717,25 @@ Regression: Boogie By The Bay 2026 (scoring.dance) never reached the app.
 - **Named scoring.dance links are recognized.** For example
   `scoring.dance/events/bbtb2024/results`. The event's number is taken from the round links
   on the page and used as the provider key.
+
+## 24. Automatic daily import (v0.12)
+
+Score sheets were only imported when someone ran commands on the Sprite: Sprites pause when
+idle, so the in-process timer rarely fired, and no external schedule existed.
+
+- **`jobs.run_daily`** runs every import step in order: calendar → eepro (this year, plus last
+  year in January) → scoring.dance → event websites → cleanup (dedupe + judge matching).
+  - Each step runs even if an earlier one fails; failures are reported per step.
+  - One run at a time; a run older than 3 h counts as stale.
+  - The run is recorded in `sync_runs` as `job:daily`, with each step's result in `changes`.
+- **Triggers:**
+  - `POST /admin/jobs/daily` (admin key; runs while the request is open, which keeps the Sprite
+    awake);
+  - `python -m wsdc_catalog daily`;
+  - the in-process scheduler, now a backup that runs the same job when it's overdue.
+- **Schedule:** `.github/workflows/daily-import.yml` runs daily at 11:17 UTC.
+  - It wakes the service via `/health` (with retries), then calls `/admin/jobs/daily` and
+    prints each step's result.
+  - The workflow fails, and GitHub emails the owner, if any step fails.
+  - Needs the repository secrets `RESULTS_API_URL` and `ADMIN_API_KEY`.
+- **`GET /health`** now includes `version` and `last_daily_import`.

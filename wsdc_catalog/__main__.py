@@ -84,6 +84,7 @@ def main(argv=None) -> int:
         ja = jsub.add_parser(act)
         ja.add_argument("name_a")
         ja.add_argument("name_b")
+    sub.add_parser("daily", help="run the full daily import now (calendar, eepro, scoring.dance, websites, cleanup)")
     sub.add_parser("dedupe", help="merge the same event recorded under different names by different sources")
     e = sub.add_parser("events")
     e.add_argument("params", nargs="*", help="filters as key=value, e.g. year=2026 country=USA")
@@ -200,6 +201,12 @@ def main(argv=None) -> int:
                 print(f"REVIEW  {r['name']!r} could be: {', '.join(r['candidates'])}")
         else:
             _print(add_override(conn, args.j_cmd, args.name_a, args.name_b))
+    elif args.cmd == "daily":
+        from .jobs import run_daily
+        out = run_daily(connect(cfg.db_path), calendar_fetch=lambda: fetch_wsdc(cfg.wsdc_url),
+                        snapshot_dir=cfg.snapshot_dir, calendar_url=cfg.wsdc_url)
+        _print(out)
+        return 0 if out["status"] == "success" else 1
     elif args.cmd == "dedupe":
         from .dedupe import merge_duplicates
         _print(merge_duplicates(connect(cfg.db_path)))

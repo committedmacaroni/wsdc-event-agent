@@ -1,0 +1,72 @@
+# Runs the results service's daily import: WSDC calendar, Event Express Pro, scoring.dance,
+# event websites, then cleanup. The request wakes the Sprite; the import runs while it's open.
+#
+# Setup (once): repo Settings -> Secrets and variables -> Actions -> New repository secret
+#   RESULTS_API_URL  the Sprite's public URL, no trailing slash
+#   ADMIN_API_KEY    the ADMIN_API_KEY value from the Sprite's .env
+#
+# GitHub emails the repo owner when a run fails. Run it by hand from the Actions tab
+# ("Run workflow") after deploying an update.
+name: Daily results import
+
+on:
+  schedule:
+    - cron: "17 11 * * *"   # 4:17am Pacific (11:17 UTC), every day
+  workflow_dispatch:
+
+concurrency:
+  group: daily-import
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check secrets are set
+        env:
+          RESULTS_API_URL: ${{ secrets.RESULTS_API_URL }}
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+        run: |
+          if [ -z "$RESULTS_API_URL" ] || [ -z "$ADMIN_API_KEY" ]; then
+            echo "::error::Add the RESULTS_API_URL and ADMIN_API_KEY repository secrets (see the top of this file)."
+            exit 1
+          fi
+
+      - name: Wake the service
+        env:
+          RESULTS_API_URL: ${{ secrets.RESULTS_API_URL }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS --max-time 30 "$RESULTS_API_URL/health"; then echo; exit 0; fi
+            echo "Not awake yet (attempt $i), retrying in 10s"; sleep 10
+          done
+          echo "::error::The results service didn't respond at $RESULTS_API_URL/health"
+          exit 1
+
+      - name: Run the daily import
+        env:
+          RESULTS_API_URL: ${{ secrets.RESULTS_API_URL }}
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+        run: |
+          code=$(curl -sS -o result.json -w "%{http_code}" --max-time 6600 -X POST \
+            -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: application/json" -d '{}' \
+            "$RESULTS_API_URL/admin/jobs/daily") || true
+          echo "HTTP $code"
+          python3 - << 'PY'
+          import json
+          try:
+              out = json.load(open("result.json"))
+          except Exception:
+              print(open("result.json").read()[:2000]); raise SystemExit(1)
+          if "steps" not in out:
+              print(json.dumps(out, indent=2)); raise SystemExit(1)
+          print(f"Import {out['run_id']}: {out['status']} in {out['duration_s']}s")
+          for s in out["steps"]:
+              detail = {k: v for k, v in s.items() if k not in ("step", "status", "seconds")}
+              print(f"  {s['step']:14} {s['status']:7} {s['seconds']:>7}s  {json.dumps(detail)[:300]}")
+          failed = [s for s in out["steps"] if s["status"] != "ok"]
+          for s in failed:
+              print(f"::error::{s['step']} failed: {s.get('error')}")
+          raise SystemExit(1 if failed else 0)
+          PY

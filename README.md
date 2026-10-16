@@ -94,6 +94,24 @@ The same flow over the API:
 | `POST /scoresheets/lookup {"name": "Rose Landay", "event_ids": ["evt_..."]}` | read key |
 | `POST /admin/scoresheets/discover {"years": [2025, 2026]}` | admin key |
 
+## Automatic daily import
+
+New events and score sheets are imported once a day by `.github/workflows/daily-import.yml`,
+which calls `POST /admin/jobs/daily` on the Sprite.
+
+**One-time setup:** in GitHub, open the repo's Settings → Secrets and variables → Actions,
+and add two repository secrets:
+
+- `RESULTS_API_URL`: the Sprite's URL
+- `ADMIN_API_KEY`: from the Sprite's `.env`
+
+**After deploying an update:** in the Actions tab, open "Daily results import" and choose
+"Run workflow" to import immediately.
+
+**By hand on the Sprite:** `python -m wsdc_catalog daily`.
+
+**Status:** `GET /health` shows the version and the last import's result.
+
 ## Wiring into `/find-results`
 
 ```python

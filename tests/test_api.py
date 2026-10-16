@@ -141,3 +141,12 @@ class TestAPI(unittest.TestCase):
         self.assertEqual((status, res["registry"]["status"], res["total_events"]), (200, "found", 1))
         self.assertEqual(self.req("GET", "/dancers/results?name=ab")[0], 400)
         self.assertEqual(self.req("GET", "/dancers/results?name=Emily%20Madden", key=None)[0], 401)
+
+    def test_daily_job_endpoint_and_health(self):
+        self.assertEqual(self.req("POST", "/admin/jobs/daily", key="read-key", body={})[0], 401)
+        status, out = self.req("POST", "/admin/jobs/daily", key="admin-key", body={})
+        self.assertEqual(status, 200)
+        self.assertEqual([s["step"] for s in out["steps"]], ["calendar", "eepro", "scoring_dance", "websites", "cleanup"])
+        status, h = self.req("GET", "/health", key=None)
+        self.assertEqual((status, h["last_daily_import"]["run_id"]), (200, out["run_id"]))
+        self.assertIn("version", h)
