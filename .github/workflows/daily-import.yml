@@ -53,6 +53,14 @@ jobs:
             -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: application/json" -d '{}' \
             "$RESULTS_API_URL/admin/jobs/daily") || true
           echo "HTTP $code"
+          if [ "$code" = "404" ]; then
+            echo "::error::The server is running an older version without the daily import. Run ~/update-catalog.sh on the server once."
+            exit 1
+          fi
+          if [ "$code" = "401" ] || [ "$code" = "403" ]; then
+            echo "::error::The server rejected ADMIN_API_KEY. Check the secret matches ADMIN_API_KEY in the server's .env file."
+            exit 1
+          fi
           python3 - << 'PY'
           import json
           try:
