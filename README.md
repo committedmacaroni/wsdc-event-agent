@@ -155,3 +155,7 @@ wsdc_catalog/
   scheduler.py   daily sync thread
 tests/fixtures/make_fixtures.py   fixture generator (real rows, reconstructed markup)
 ```
+
+## Automatic deploys
+
+Pushing to `main` deploys automatically: the **Deploy to Sprite** GitHub Actions workflow runs the tests, tells the results service to pull the new code and restart, and waits for `/health` to report the new version. It needs the repository secrets `RESULTS_API_URL` and `ADMIN_API_KEY` (the same ones the daily import uses). The first time, install v0.13 on the server manually with `~/update-catalog.sh`; after that no manual updates are needed.

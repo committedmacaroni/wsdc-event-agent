@@ -29,7 +29,7 @@ class HttpError(Exception):
         self.status, self.code, self.message, self.extra = status, code, message, extra
 
 
-def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=None):
+def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=None, deploy_hooks=None):
     sheet_kw = {"fetch": sheet_fetch} if sheet_fetch else {}
     fetcher = fetcher or (lambda: fetch_wsdc(cfg.wsdc_url))
     registry_kw = {"fetch": registry_fetch} if registry_fetch else {}
@@ -118,6 +118,19 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
             return 200, {"ok": True, "version": __version__, "time": iso(utcnow()),
                          "last_successful_sync": dict(last) if last else None,
                          "last_daily_import": last_daily(conn)}
+
+        def deploy(self, conn, params):
+            from . import deploy as dep
+            update, restart = deploy_hooks or (dep.run_update, dep.restart_soon)
+            out = update()
+            if not out["ok"]:
+                raise HttpError(500, "deploy_failed", f"{out['step']} failed: {out['error']}")
+            if out["changed"]:
+                restart()
+                out["message"] = "Updated; restarting with the new code now."
+            else:
+                out["message"] = "Already up to date."
+            return 200, out
 
         def daily_job(self, conn, params):
             from .jobs import JobAlreadyRunning, run_daily
@@ -329,6 +342,7 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
         ("POST", r"/admin/scoresheets/wdr", True, Handler.scoresheet_wdr),
         ("POST", r"/admin/scoresheets/discover", True, Handler.scoresheet_discover),
         ("POST", r"/admin/jobs/daily", True, Handler.daily_job),
+        ("POST", r"/admin/deploy", True, Handler.deploy),
         ("POST", r"/admin/sync-events", True, Handler.sync),
         ("GET", r"/admin/sync-runs", True, Handler.sync_runs),
         ("POST", r"/admin/series/([A-Za-z0-9_]+)/aliases", True, Handler.alias),
@@ -338,6 +352,6 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
 
 
 def serve(cfg: Config, host: str = "0.0.0.0", port: int = 8080, fetcher=None,
-          registry_fetch=None, sheet_fetch=None) -> ThreadingHTTPServer:
+          registry_fetch=None, sheet_fetch=None, deploy_hooks=None) -> ThreadingHTTPServer:
     connect(cfg.db_path).close()  # create schema up front
-    return ThreadingHTTPServer((host, port), make_handler(cfg, fetcher, registry_fetch, sheet_fetch))
+    return ThreadingHTTPServer((host, port), make_handler(cfg, fetcher, registry_fetch, sheet_fetch, deploy_hooks))

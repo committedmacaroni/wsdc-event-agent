@@ -1,0 +1,73 @@
+# Deploys every push to main: tells the results service on the Sprite to pull the new code
+# from GitHub and restart, then waits until /health reports the new version.
+# Uses the same RESULTS_API_URL and ADMIN_API_KEY secrets as the daily import.
+name: Deploy to Sprite
+
+on:
+  push:
+    branches: [main]
+    paths: ["wsdc_catalog/**", "requirements.txt"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run tests
+        run: python -m unittest discover -s tests -t .
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check secrets are set
+        env:
+          RESULTS_API_URL: ${{ secrets.RESULTS_API_URL }}
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+        run: |
+          if [ -z "$RESULTS_API_URL" ] || [ -z "$ADMIN_API_KEY" ]; then
+            echo "::error::Add the RESULTS_API_URL and ADMIN_API_KEY repository secrets."
+            exit 1
+          fi
+
+      - name: Pull the new code on the Sprite
+        env:
+          RESULTS_API_URL: ${{ secrets.RESULTS_API_URL }}
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+        run: |
+          for i in 1 2 3 4 5 6; do curl -fsS --max-time 30 "$RESULTS_API_URL/health" >/dev/null && break; sleep 10; done
+          code=$(curl -sS -o deploy.json -w "%{http_code}" --max-time 900 -X POST \
+            -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: application/json" -d '{}' \
+            "$RESULTS_API_URL/admin/deploy") || true
+          cat deploy.json; echo
+          if [ "$code" = "404" ]; then
+            echo "::error::The Sprite is running a version without automatic deploys. Run ~/update-catalog.sh on the Sprite once."
+            exit 1
+          fi
+          [ "$code" = "200" ] || { echo "::error::Deploy failed (HTTP $code)"; exit 1; }
+
+      - name: Wait for the new version
+        env:
+          RESULTS_API_URL: ${{ secrets.RESULTS_API_URL }}
+        run: |
+          want=$(python3 -c "import re;print(re.search(r'\"(.+?)\"', open('wsdc_catalog/__init__.py').read().split('__version__')[1]).group(1))")
+          echo "Waiting for version $want"
+          for i in $(seq 1 24); do
+            got=$(curl -fsS --max-time 15 "$RESULTS_API_URL/health" | python3 -c "import json,sys;print(json.load(sys.stdin).get('version',''))" 2>/dev/null || true)
+            echo "  running: ${got:-not responding}"
+            [ "$got" = "$want" ] && { echo "Deployed $want"; exit 0; }
+            sleep 5
+          done
+          echo "::error::The service didn't come back on version $want. Check the service on the Sprite."
+          exit 1

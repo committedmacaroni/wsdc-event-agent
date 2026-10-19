@@ -739,3 +739,9 @@ idle, so the in-process timer rarely fired, and no external schedule existed.
   - The workflow fails, and GitHub emails the owner, if any step fails.
   - Needs the repository secrets `RESULTS_API_URL` and `ADMIN_API_KEY`.
 - **`GET /health`** now includes `version` and `last_daily_import`.
+
+## 25. Automatic code deploys (v0.13)
+
+- `POST /admin/deploy` (admin key): runs `git pull --ff-only` in the project folder; if the commit changed, runs `pip install -r requirements.txt` with the service's own Python, replies with `{ok, changed, before, after}`, then exits so the service manager restarts it on the new code. If nothing changed it replies "Already up to date." and keeps running. A failed pull or install returns 500 `deploy_failed` and the service keeps running the old code.
+- `.github/workflows/deploy.yml`: on every push to `main` that touches `wsdc_catalog/**` or `requirements.txt` (or on demand), runs the test suite, wakes the service, calls `/admin/deploy`, then polls `/health` until `version` matches `wsdc_catalog/__init__.py`. Uses the `RESULTS_API_URL` and `ADMIN_API_KEY` repository secrets.
+- One-time setup: the service must already be running v0.13+ (install it once with `~/update-catalog.sh`).
