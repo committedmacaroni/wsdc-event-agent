@@ -5,6 +5,7 @@ import hmac
 import json
 import logging
 import re
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -133,13 +134,41 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
             return 200, out
 
         def daily_job(self, conn, params):
-            from .jobs import JobAlreadyRunning, run_daily
+            """Starts the import in the background (202 + run_id); ?wait=1 runs it inline."""
+            from .jobs import JobAlreadyRunning, claim_daily, run_daily
             kw = {"fetch": sheet_fetch, "delay": 0} if sheet_fetch else {}
             try:
-                out = run_daily(conn, calendar_fetch=fetcher, snapshot_dir=cfg.snapshot_dir,
-                                calendar_url=cfg.wsdc_url, **kw)
+                run_id = claim_daily(conn)
             except JobAlreadyRunning as e:
-                raise HttpError(409, "import_in_progress", str(e)) from None
+                raise HttpError(409, "import_in_progress", str(e), run_id=e.run_id) from None
+
+            def work(c):
+                return run_daily(c, calendar_fetch=fetcher, snapshot_dir=cfg.snapshot_dir,
+                                 calendar_url=cfg.wsdc_url, run_id=run_id, **kw)
+
+            if params.get("wait") in ("1", "true"):
+                return 200, work(conn)
+
+            def background():
+                c = connect(cfg.db_path)
+                try:
+                    work(c)
+                except Exception:  # noqa: BLE001
+                    log.exception("daily import %s crashed", run_id)
+                    c.execute("UPDATE sync_runs SET status='failed', completed_at=?, errors=? WHERE id=?",
+                              (iso(utcnow()), json.dumps(["crashed; see service logs"]), run_id))
+                finally:
+                    c.close()
+
+            threading.Thread(target=background, name=f"daily-import-{run_id}", daemon=True).start()
+            return 202, {"run_id": run_id, "status": "running",
+                         "message": f"Import started. Check progress at GET /admin/jobs/daily/{run_id}."}
+
+        def daily_job_status(self, conn, params, run_id):
+            from .jobs import get_run
+            out = get_run(conn, int(run_id))
+            if not out:
+                raise HttpError(404, "not_found", f"no daily import {run_id}")
             return 200, out
 
         def events(self, conn, params):
@@ -342,6 +371,7 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
         ("POST", r"/admin/scoresheets/wdr", True, Handler.scoresheet_wdr),
         ("POST", r"/admin/scoresheets/discover", True, Handler.scoresheet_discover),
         ("POST", r"/admin/jobs/daily", True, Handler.daily_job),
+        ("GET", r"/admin/jobs/daily/(\d+)", True, Handler.daily_job_status),
         ("POST", r"/admin/deploy", True, Handler.deploy),
         ("POST", r"/admin/sync-events", True, Handler.sync),
         ("GET", r"/admin/sync-runs", True, Handler.sync_runs),
@@ -353,5 +383,11 @@ def make_handler(cfg: Config, fetcher=None, registry_fetch=None, sheet_fetch=Non
 
 def serve(cfg: Config, host: str = "0.0.0.0", port: int = 8080, fetcher=None,
           registry_fetch=None, sheet_fetch=None, deploy_hooks=None) -> ThreadingHTTPServer:
-    connect(cfg.db_path).close()  # create schema up front
+    from .jobs import mark_interrupted
+    conn = connect(cfg.db_path)  # create schema up front
+    try:
+        if mark_interrupted(conn):
+            log.warning("marked an interrupted daily import as failed")
+    finally:
+        conn.close()
     return ThreadingHTTPServer((host, port), make_handler(cfg, fetcher, registry_fetch, sheet_fetch, deploy_hooks))

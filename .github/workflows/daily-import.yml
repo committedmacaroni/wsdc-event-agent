@@ -1,5 +1,6 @@
 # Runs the results service's daily import: WSDC calendar, Event Express Pro, scoring.dance,
-# event websites, then cleanup. The request wakes the Sprite; the import runs while it's open.
+# event websites, then cleanup. The import runs in the background on the server; this workflow
+# starts it, then checks on it every 20 seconds (which also keeps the Sprite awake) until it ends.
 #
 # Setup (once): repo Settings -> Secrets and variables -> Actions -> New repository secret
 #   RESULTS_API_URL  the Sprite's public URL, no trailing slash
@@ -21,7 +22,7 @@ concurrency:
 jobs:
   import:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 350
     steps:
       - name: Check secrets are set
         env:
@@ -48,33 +49,74 @@ jobs:
         env:
           RESULTS_API_URL: ${{ secrets.RESULTS_API_URL }}
           ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+        shell: python3 {0}
         run: |
-          code=$(curl -sS -o result.json -w "%{http_code}" --max-time 6600 -X POST \
-            -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: application/json" -d '{}' \
-            "$RESULTS_API_URL/admin/jobs/daily") || true
-          echo "HTTP $code"
-          if [ "$code" = "404" ]; then
-            echo "::error::The server is running an older version without the daily import. Run ~/update-catalog.sh on the server once."
-            exit 1
-          fi
-          if [ "$code" = "401" ] || [ "$code" = "403" ]; then
-            echo "::error::The server rejected ADMIN_API_KEY. Check the secret matches ADMIN_API_KEY in the server's .env file."
-            exit 1
-          fi
-          python3 - << 'PY'
-          import json
-          try:
-              out = json.load(open("result.json"))
-          except Exception:
-              print(open("result.json").read()[:2000]); raise SystemExit(1)
-          if "steps" not in out:
-              print(json.dumps(out, indent=2)); raise SystemExit(1)
-          print(f"Import {out['run_id']}: {out['status']} in {out['duration_s']}s")
-          for s in out["steps"]:
+          import json, os, sys, time, urllib.error, urllib.request
+
+          BASE, KEY = os.environ["RESULTS_API_URL"].rstrip("/"), os.environ["ADMIN_API_KEY"]
+          DEADLINE = time.time() + 5.5 * 3600
+
+          def call(method, path):
+              req = urllib.request.Request(BASE + path, method=method, data=b"{}" if method == "POST" else None,
+                                           headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      return r.status, json.loads(r.read() or b"{}")
+              except urllib.error.HTTPError as e:
+                  body = e.read()
+                  try:
+                      return e.code, json.loads(body)
+                  except ValueError:
+                      return e.code, {"raw": body[:500].decode("utf-8", "replace")}
+
+          def fail(msg):
+              print(f"::error::{msg}"); sys.exit(1)
+
+          code, out = call("POST", "/admin/jobs/daily")
+          print(f"Start: HTTP {code} {json.dumps(out)[:400]}")
+          if code == 404:
+              fail("The server is running an older version without the daily import. Run ~/update-catalog.sh on the server once.")
+          if code in (401, 403):
+              fail("The server rejected ADMIN_API_KEY. Check the secret matches ADMIN_API_KEY in the server's .env file.")
+          if code == 200 and "steps" in out:       # older server that runs the import inline
+              run = out
+          elif code in (202, 409) and (out.get("run_id") or out.get("error", {}).get("run_id")):
+              rid = out.get("run_id") or out["error"]["run_id"]
+              print(f"Following import {rid}" + (" (already running)" if code == 409 else ""))
+              seen, errors_in_a_row = 0, 0
+              while True:
+                  time.sleep(20)
+                  try:
+                      c, run = call("GET", f"/admin/jobs/daily/{rid}")
+                  except Exception as e:  # network blip: keep trying for a while
+                      errors_in_a_row += 1
+                      print(f"  (status check failed: {e})")
+                      if errors_in_a_row >= 15:
+                          fail("Lost contact with the server for 5 minutes.")
+                      continue
+                  errors_in_a_row = 0
+                  if c != 200:
+                      fail(f"Status check returned HTTP {c}: {json.dumps(run)[:300]}")
+                  for s in run["steps"][seen:]:
+                      print(f"  finished {s['step']} ({s['status']}, {s.get('seconds')}s)")
+                  seen = len(run["steps"])
+                  if run["status"] != "running":
+                      break
+                  if time.time() > DEADLINE:
+                      print(f"::warning::Import {rid} is still running on the server after 5.5 hours; "
+                            "it will keep going there. Tomorrow's run picks up where it left off.")
+                      sys.exit(0)
+          else:
+              fail(f"Unexpected response (HTTP {code}).")
+
+          print(f"Import {run['run_id']}: {run['status']}")
+          for s in run["steps"]:
               detail = {k: v for k, v in s.items() if k not in ("step", "status", "seconds")}
-              print(f"  {s['step']:14} {s['status']:7} {s['seconds']:>7}s  {json.dumps(detail)[:300]}")
-          failed = [s for s in out["steps"] if s["status"] != "ok"]
+              print(f"  {s['step']:14} {s['status']:7} {s.get('seconds', ''):>7}s  {json.dumps(detail)[:300]}")
+          failed = [s for s in run["steps"] if s["status"] != "ok"]
           for s in failed:
               print(f"::error::{s['step']} failed: {s.get('error')}")
-          raise SystemExit(1 if failed else 0)
-          PY
+          for e in run.get("errors", []):
+              if not any(e.startswith(s["step"]) for s in failed):
+                  print(f"::error::{e}")
+          sys.exit(1 if run["status"] != "success" else 0)

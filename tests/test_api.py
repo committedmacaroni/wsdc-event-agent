@@ -142,9 +142,25 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(self.req("GET", "/dancers/results?name=ab")[0], 400)
         self.assertEqual(self.req("GET", "/dancers/results?name=Emily%20Madden", key=None)[0], 401)
 
+    def test_daily_job_runs_in_background_and_reports_progress(self):
+        import time
+        status, out = self.req("POST", "/admin/jobs/daily", key="admin-key", body={})
+        self.assertEqual((status, out["status"]), (202, "running"))
+        rid = out["run_id"]
+        for _ in range(100):
+            status, run = self.req("GET", f"/admin/jobs/daily/{rid}", key="admin-key")
+            if run["status"] != "running":
+                break
+            time.sleep(0.1)
+        self.assertEqual(status, 200)
+        self.assertIn(run["status"], ("success", "failed"))
+        self.assertEqual([s["step"] for s in run["steps"]], ["calendar", "eepro", "scoring_dance", "websites", "cleanup"])
+        self.assertEqual(self.req("GET", f"/admin/jobs/daily/{rid}", key="read-key")[0], 401)
+        self.assertEqual(self.req("GET", "/admin/jobs/daily/99999", key="admin-key")[0], 404)
+
     def test_daily_job_endpoint_and_health(self):
         self.assertEqual(self.req("POST", "/admin/jobs/daily", key="read-key", body={})[0], 401)
-        status, out = self.req("POST", "/admin/jobs/daily", key="admin-key", body={})
+        status, out = self.req("POST", "/admin/jobs/daily?wait=1", key="admin-key", body={})
         self.assertEqual(status, 200)
         self.assertEqual([s["step"] for s in out["steps"]], ["calendar", "eepro", "scoring_dance", "websites", "cleanup"])
         status, h = self.req("GET", "/health", key=None)

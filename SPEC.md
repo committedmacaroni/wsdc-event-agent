@@ -745,3 +745,11 @@ idle, so the in-process timer rarely fired, and no external schedule existed.
 - `POST /admin/deploy` (admin key): runs `git pull --ff-only` in the project folder; if the commit changed, runs `pip install -r requirements.txt` with the service's own Python, replies with `{ok, changed, before, after}`, then exits so the service manager restarts it on the new code. If nothing changed it replies "Already up to date." and keeps running. A failed pull or install returns 500 `deploy_failed` and the service keeps running the old code.
 - `.github/workflows/deploy.yml`: on every push to `main` that touches `wsdc_catalog/**` or `requirements.txt` (or on demand), runs the test suite, wakes the service, calls `/admin/deploy`, then polls `/health` until `version` matches `wsdc_catalog/__init__.py`. Uses the `RESULTS_API_URL` and `ADMIN_API_KEY` repository secrets.
 - One-time setup: the service must already be running v0.13+ (install it once with `~/update-catalog.sh`).
+
+## 26. Background daily import (v0.13.1)
+
+- `POST /admin/jobs/daily` claims the single import slot and starts the import in a background thread, returning `202 {run_id, status: "running"}` at once (`?wait=1` keeps the old inline behaviour). If an import is already running it returns `409 import_in_progress` with that run's `run_id`.
+- `GET /admin/jobs/daily/<run_id>` (admin key) returns `{run_id, status, started_at, completed_at, errors, steps}`; `steps` is saved as each step finishes, so it shows progress.
+- On startup the service marks any `running` daily import as failed ("interrupted: the service restarted"), since a restart (including an automatic deploy) ends it. The stale-run cutoff is now 12 hours.
+- The Daily results import workflow starts the import (or follows the one already running), checks it every 20 seconds (which keeps the Sprite awake), and reports each step. After 5.5 hours it stops watching with a warning; the import carries on on the server.
+- Reason: the first full import ran past the 110-minute request limit, so the request was cut off and the next scheduled run hit "already running".

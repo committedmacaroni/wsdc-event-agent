@@ -9,8 +9,10 @@ Steps (each runs even if an earlier one fails; failures are reported, not raised
   5. cleanup      merge cross-source duplicate events, refresh judge name matching
 
 Run it with POST /admin/jobs/daily (what the GitHub Actions schedule calls), or
-`python -m wsdc_catalog daily`. One run at a time; the run is recorded in sync_runs as
-source "job:daily", with each step's result in `changes`.
+`python -m wsdc_catalog daily`. The API starts the run in the background and returns its id at
+once; GET /admin/jobs/daily/<id> reports progress. One run at a time; the run is recorded in
+sync_runs as source "job:daily", with each step's result in `changes` (saved as each step ends).
+A run cut short by a restart is marked failed when the service starts again.
 """
 from __future__ import annotations
 
@@ -22,11 +24,13 @@ from .db import iso, utcnow
 from .fetcher import fetch_html
 
 SOURCE = "job:daily"
-STALE_AFTER = timedelta(hours=3)
+STALE_AFTER = timedelta(hours=12)  # restarts are handled by mark_interrupted
 
 
 class JobAlreadyRunning(Exception):
-    pass
+    def __init__(self, message: str, run_id: int):
+        super().__init__(message)
+        self.run_id = run_id
 
 
 def _claim(conn, now: datetime) -> int:
@@ -37,7 +41,8 @@ def _claim(conn, now: datetime) -> int:
         if running:
             started = datetime.fromisoformat(running["started_at"].replace("Z", "+00:00"))
             if now - started < STALE_AFTER:
-                raise JobAlreadyRunning(f"daily import {running['id']} has been running since {running['started_at']}")
+                raise JobAlreadyRunning(f"daily import {running['id']} has been running since {running['started_at']}",
+                                        running["id"])
             conn.execute("UPDATE sync_runs SET status='failed', completed_at=? WHERE id=?", (iso(now), running["id"]))
         run_id = conn.execute("INSERT INTO sync_runs (source, started_at, status) VALUES (?,?, 'running')",
                               (SOURCE, iso(now))).lastrowid
@@ -48,10 +53,16 @@ def _claim(conn, now: datetime) -> int:
         raise
 
 
+def claim_daily(conn, now: datetime | None = None) -> int:
+    """Reserve the single daily-import slot; raises JobAlreadyRunning if a run is in progress."""
+    return _claim(conn, now or utcnow())
+
+
 def run_daily(conn, *, calendar_fetch, fetch=fetch_html, now: datetime | None = None,
               snapshot_dir=None, calendar_url: str | None = None, delay: float | None = None,
-              website_limit: int = 25) -> dict:
-    """Run the full daily import. Returns {"run_id", "status", "steps": [...], "duration_s"}."""
+              website_limit: int = 25, run_id: int | None = None) -> dict:
+    """Run the full daily import. Pass run_id from claim_daily() to run an already-claimed slot.
+    Returns {"run_id", "status", "steps": [...], "duration_s"}."""
     from .dedupe import merge_duplicates
     from .judges import rebuild
     from .scoresheets import index_eepro_year
@@ -59,7 +70,8 @@ def run_daily(conn, *, calendar_fetch, fetch=fetch_html, now: datetime | None = 
     from .websites import discover_from_websites, scan_scoring_dance
 
     now = now or utcnow()
-    run_id = _claim(conn, now)
+    if run_id is None:
+        run_id = _claim(conn, now)
     t0 = time.monotonic()
     kw = {} if delay is None else {"delay": delay}
     years = [now.year] + ([now.year - 1] if now.month == 1 else [])
@@ -104,6 +116,7 @@ def run_daily(conn, *, calendar_fetch, fetch=fetch_html, now: datetime | None = 
         except Exception as e:  # noqa: BLE001 - one failed source shouldn't stop the others
             steps.append({"step": name, "status": "failed", "error": f"{type(e).__name__}: {e}"[:500]})
         steps[-1]["seconds"] = round(time.monotonic() - s0, 1)
+        conn.execute("UPDATE sync_runs SET changes=? WHERE id=?", (json.dumps(steps), run_id))
 
     status = "success" if all(s["status"] == "ok" for s in steps) else "failed"
     errors = [f"{s['step']}: {s['error']}" for s in steps if s["status"] == "failed"]
@@ -127,3 +140,21 @@ def daily_due(conn, interval: timedelta, now: datetime) -> bool:
     if not r or not r[0]:
         return True
     return now - datetime.fromisoformat(r[0].replace("Z", "+00:00")) >= interval
+
+
+def get_run(conn, run_id: int) -> dict | None:
+    r = conn.execute("SELECT id, status, started_at, completed_at, errors, changes FROM sync_runs "
+                     "WHERE id=? AND source=?", (run_id, SOURCE)).fetchone()
+    if not r:
+        return None
+    return {"run_id": r["id"], "status": r["status"], "started_at": r["started_at"],
+            "completed_at": r["completed_at"], "errors": json.loads(r["errors"] or "[]"),
+            "steps": json.loads(r["changes"] or "[]")}
+
+
+def mark_interrupted(conn, now: datetime | None = None) -> int:
+    """On startup: no import can be running yet, so any 'running' row was cut off by a restart."""
+    cur = conn.execute("UPDATE sync_runs SET status='failed', completed_at=?, errors=? "
+                       "WHERE source=? AND status='running'",
+                       (iso(now or utcnow()), json.dumps(["interrupted: the service restarted"]), SOURCE))
+    return cur.rowcount

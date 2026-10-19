@@ -3,7 +3,8 @@ import unittest
 from datetime import datetime, timezone
 
 from wsdc_catalog.dancers import dancer_results
-from wsdc_catalog.jobs import JobAlreadyRunning, daily_due, last_daily, run_daily
+from wsdc_catalog.jobs import (JobAlreadyRunning, claim_daily, daily_due, get_run, last_daily,
+                               mark_interrupted, run_daily)
 from tests.helpers import day1_fetch, mem
 from tests.test_boogie_regression import BOOGIE, FakeSD
 from tests.test_scoresheets import PAGES
@@ -70,3 +71,23 @@ class TestDailyImport(unittest.TestCase):
         self.assertTrue(daily_due(conn, timedelta(hours=24), NOW))
         run_daily(conn, calendar_fetch=day1_fetch(), fetch=fetcher(), now=NOW, delay=0)
         self.assertFalse(daily_due(conn, timedelta(hours=24), NOW))
+
+
+class TestBackgroundSupport(unittest.TestCase):
+    def test_claim_then_run_progress_and_interrupt(self):
+        from wsdc_catalog.db import connect
+        import tempfile, os
+        d = tempfile.mkdtemp()
+        conn = connect(os.path.join(d, "c.sqlite3"))
+        rid = claim_daily(conn, NOW)
+        with self.assertRaises(JobAlreadyRunning) as cm:
+            claim_daily(conn, NOW)
+        self.assertEqual(cm.exception.run_id, rid)
+        self.assertEqual(get_run(conn, rid)["status"], "running")
+        # a restart while running: the row is marked failed and the slot is free again
+        self.assertEqual(mark_interrupted(conn), 1)
+        self.assertEqual(get_run(conn, rid)["errors"], ["interrupted: the service restarted"])
+        rid2 = claim_daily(conn, NOW)
+        out = run_daily(conn, calendar_fetch=day1_fetch(), fetch=fetcher(), now=NOW, delay=0, run_id=rid2)
+        self.assertEqual(out["run_id"], rid2)
+        self.assertEqual(len(get_run(conn, rid2)["steps"]), 5)
